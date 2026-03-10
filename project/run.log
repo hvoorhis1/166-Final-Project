@@ -1,0 +1,179 @@
+\nUsing predefined train/test splits from dataset files.
+\n=== DATASET OVERVIEW ===
+Shape: (494, 221)
+\nDtypes:
+Name              str
+apol          float64
+naAromAtom      int64
+nAromBond       int64
+nAtom           int64
+               ...   
+HOMO6         float64
+HOMO7         float64
+HOMO8         float64
+HOMO9         float64
+deltaE_V      float64
+Length: 221, dtype: object
+\nColumn names:
+['Name', 'apol', 'naAromAtom', 'nAromBond', 'nAtom', 'nHeavyAtom', 'nH', 'nC', 'nN', 'BCUTw-1l', 'BCUTw-1h', 'BCUTc-1l', 'BCUTc-1h', 'BCUTp-1l', 'BCUTp-1h', 'nBonds', 'nBonds2', 'nBondsS', 'nBondsS2', 'nBondsS3', 'nBondsD', 'nBondsD2', 'nBondsM', 'bpol', 'C1SP1', 'C2SP1', 'C2SP2', 'C3SP2', 'C1SP3', 'SCH-6', 'SCH-7', 'VCH-6', 'VCH-7', 'SC-3', 'SC-5', 'VC-3', 'VC-5', 'Sv', 'Sse', 'Spe', 'Sare', 'Sp', 'Si', 'Mv', 'Mse', 'Mpe', 'Mare', 'Mp', 'Mi', 'ECCEN', 'nwHBa', 'nHdsCH', 'nHCsatu', 'nHother', 'nsCH3', 'ndsCH', 'ntsC', 'ndssC', 'naasC', 'ntN', 'SHBa', 'SwHBa', 'SHdsCH', 'SHCsatu', 'SHother', 'SsCH3', 'SdsCH', 'StsC', 'SdssC', 'SaasC', 'StN', 'SdO', 'minHBa', 'minwHBa', 'minHdsCH', 'minHCsatu', 'minHother', 'minsCH3', 'mindsCH', 'mintsC', 'mindssC', 'minaasC', 'mintN', 'mindO', 'maxHBa', 'maxwHBa', 'maxHdsCH', 'maxHCsatu', 'maxHother', 'maxsCH3', 'maxdsCH', 'maxtsC', 'maxdssC', 'maxaasC', 'maxtN', 'maxdO', 'sumI', 'meanI', 'hmax', 'gmax', 'hmin', 'gmin', 'LipoaffinityIndex', 'MAXDN', 'MAXDP', 'DELS', 'MAXDN2', 'MAXDP2', 'DELS2', 'ETA_Alpha', 'ETA_AlphaP', 'ETA_dAlpha_B', 'ETA_Epsilon_1', 'ETA_Epsilon_2', 'ETA_Epsilon_3', 'ETA_Epsilon_4', 'ETA_Epsilon_5', 'ETA_dEpsilon_A', 'ETA_dEpsilon_B', 'ETA_dEpsilon_C', 'ETA_Psi_1', 'ETA_dPsi_A', 'ETA_Shape_P', 'ETA_Shape_Y', 'ETA_Beta', 'ETA_BetaP', 'ETA_Beta_s', 'ETA_BetaP_s', 'ETA_Beta_ns', 'ETA_BetaP_ns', 'ETA_dBeta', 'ETA_dBetaP', 'ETA_Eta', 'ETA_EtaP', 'ETA_Eta_R', 'ETA_Eta_F', 'ETA_EtaP_F', 'ETA_Eta_L', 'ETA_EtaP_L', 'ETA_Eta_R_L', 'ETA_Eta_F_L', 'ETA_EtaP_F_L', 'ETA_Eta_B', 'ETA_EtaP_B', 'ETA_Eta_B_RC', 'ETA_EtaP_B_RC', 'FMF', 'fragC', 'nHBAcc', 'nHBAcc2', 'nHBAcc3', 'nHBAcc_Lipinski', 'HybRatio', 'Kier1', 'Kier2', 'Kier3', 'nAtomLC', 'nAtomP', 'nAtomLAC', 'MDEC-12', 'MDEC-13', 'MDEC-22', 'MDEC-23', 'MDEC-33', 'MLFER_BH', 'MLFER_BO', 'MLFER_S', 'MLFER_E', 'MLFER_L', 'nRing', 'nFRing', 'nTRing', 'nRotBt', 'RotBtFrac', 'topoRadius', 'topoDiameter', 'topoShape', 'GGI1', 'GGI2', 'GGI3', 'GGI4', 'GGI5', 'GGI6', 'GGI7', 'JGI1', 'JGI2', 'JGI3', 'JGI4', 'JGI5', 'JGI6', 'JGI7', 'JGT', 'TopoPSA', 'VABC', 'MW', 'AMW', 'P_gamma', 'P_beta', 'P_alpha', 'dipole_moment', 'LUMO9', 'LUMO8', 'LUMO7', 'LUMO6', 'LUMO5', 'LUMO4', 'LUMO3', 'LUMO2', 'LUMO1', 'LUMO', 'HOMO', 'HOMO1', 'HOMO2', 'HOMO3', 'HOMO4', 'HOMO5', 'HOMO6', 'HOMO7', 'HOMO8', 'HOMO9', 'deltaE_V']
+\nFirst 10 rows:
+                    Name       apol  naAromAtom  ...   HOMO8   HOMO9  deltaE_V
+0         89324826_b3lyp  26.305137           0  ... -13.946 -14.146  1.320000
+1      8718_b3lyp_prop_0  27.631930           0  ... -13.934 -14.094  1.045225
+2             8718_b3lyp  21.018344           0  ... -14.384 -14.584  0.820000
+3  86210053_b3lyp_prop_0  25.831172           0  ... -13.763 -14.144  1.981341
+4         86210053_b3lyp  19.217586           0  ... -14.929 -15.243  2.010000
+5      8530_b3lyp_prop_3  29.818344           6  ... -13.180 -13.587  0.976611
+6      8530_b3lyp_prop_2  29.818344           6  ... -13.164 -13.683  0.961740
+7             8530_b3lyp  23.204758           6  ... -14.333 -14.371  0.740000
+8     78494_b3lyp_prop_2  27.631930           0  ... -13.743 -13.999  1.129009
+9     78494_b3lyp_prop_1  27.631930           0  ... -13.747 -13.817  1.127893
+
+[10 rows x 221 columns]
+\n=== TARGET SUMMARY (deltaE_V) ===
+mean: 1.223749
+std: 0.394590
+min: -0.110000
+25%: 0.980000
+median: 1.179818
+75%: 1.447308
+max: 2.715289
+\n=== MISSING VALUES PER COLUMN ===
+Name            0
+HybRatio        0
+ETA_EtaP_F_L    0
+ETA_Eta_B       0
+ETA_EtaP_B      0
+               ..
+minsCH3         0
+mindsCH         0
+mintsC          0
+mindssC         0
+deltaE_V        0
+Length: 221, dtype: int64
+\nConstant numeric columns (0): []
+Nearly constant numeric columns (0): []
+\nDuplicated rows by Name: 0
+Non-numeric descriptor columns (0): []
+\nHigh-correlation descriptor pairs (|r|>0.95): 302
+                  f1               f2      corr
+11004         nHdsCH            ndsCH  1.000000
+18280         maxHBa            MAXDP  1.000000
+32561        nHBAcc2          nHBAcc3  1.000000
+32562        nHBAcc2  nHBAcc_Lipinski  1.000000
+24643  ETA_Epsilon_2    ETA_Epsilon_5  1.000000
+32781        nHBAcc3  nHBAcc_Lipinski  1.000000
+21565           gmax            MAXDP  1.000000
+20684          maxdO             gmax  1.000000
+20689          maxdO            MAXDP  1.000000
+15847        minwHBa          mindssC  1.000000
+18275         maxHBa             gmax  1.000000
+18271         maxHBa            maxdO  1.000000
+26181      ETA_Psi_1       ETA_dPsi_A  1.000000
+8361             Spe             Sare  0.999983
+40              apol               Sp  0.999978
+17832          mintN            maxtN  0.999936
+221       naAromAtom        nAromBond  0.999839
+8142             Sse             Sare  0.999610
+8141             Sse              Spe  0.999607
+22883           DELS            DELS2  0.999607
+\nUsable numeric descriptor columns after cleaning: 141
+Dropped non-numeric: 0
+Dropped all-missing: 0
+Dropped zero-variance: 0
+Dropped high-correlation (>|0.95|): 78
+/Users/harryvoorhis/Documents/Playground/.venv/lib/python3.11/site-packages/sklearn/linear_model/_coordinate_descent.py:1663: FutureWarning: 'n_alphas' was deprecated in 1.7 and will be removed in 1.9. 'alphas' now accepts an integer value which removes the need to pass 'n_alphas'. The default value of 'alphas' will change from None to 100 in 1.9. Pass an explicit value to 'alphas' and leave 'n_alphas' to its default value to silence this warning.
+  warnings.warn(
+Reduced feature set size: 53
+X_full dimensionality: train=(395, 141), test=(99, 141)
+X_reduced dimensionality: train=(395, 53), test=(99, 53)
+Ridge on X_full: test RMSE=0.1746, MAE=0.1220, R2=0.8460
+RandomForest on X_full: test RMSE=0.2042, MAE=0.1364, R2=0.7893
+GradientBoosting on X_full: test RMSE=0.2074, MAE=0.1271, R2=0.7827
+Lasso on X_full: test RMSE=0.1789, MAE=0.1316, R2=0.8383
+Ridge on X_reduced: test RMSE=0.1869, MAE=0.1373, R2=0.8236
+RandomForest on X_reduced: test RMSE=0.2060, MAE=0.1370, R2=0.7856
+GradientBoosting on X_reduced: test RMSE=0.1859, MAE=0.1238, R2=0.8254
+Lasso on X_reduced: test RMSE=0.1864, MAE=0.1366, R2=0.8244
+\n=== BEST OVERALL MODEL ===
+model                                          Ridge
+feature_set                                   X_full
+best_params     {"model__alpha": 1.3738237958832638}
+cv_rmse_mean                                0.147881
+cv_rmse_std                                  0.03513
+cv_mae_mean                                 0.105977
+cv_mae_std                                  0.013391
+cv_r2_mean                                  0.837473
+cv_r2_std                                   0.074508
+test_rmse                                   0.174593
+test_mae                                    0.122038
+test_r2                                     0.846016
+Name: 0, dtype: object
+\n=== RESIDUAL STATS ===
+{'residual_mean': 0.0011512666446706662, 'residual_std': 0.17458942969494404, 'residual_skewness': -0.003486084614097976, 'residual_kurtosis': 2.837679885648444}
+\n10 worst predictions:
+                      Name  actual_deltaE_V  ...  residual  absolute_error
+34   12527779_b3lyp_prop_0         2.522509  ...  0.632951        0.632951
+79          11040862_b3lyp         0.630000  ... -0.574648        0.574648
+83          57194585_b3lyp         0.650000  ... -0.556633        0.556633
+59        12527779_b3lyp_0         2.715289  ...  0.461610        0.461610
+46          45082930_b3lyp         0.980000  ... -0.415615        0.415615
+70  102160488_b3lyp_prop_0         1.899162  ...  0.364637        0.364637
+1         11040862_b3lyp_0         2.190624  ...  0.364279        0.364279
+81   57194585_b3lyp_prop_2         1.208344  ... -0.334988        0.334988
+27        15269886_b3lyp_1         2.314627  ...  0.318410        0.318410
+62        17981306_b3lyp_1         2.021083  ...  0.284635        0.284635
+
+[10 rows x 5 columns]
+\n=== ERROR BY DESCRIPTOR-DEFINED CLASS ===
+              class  count  mean_target       MAE      RMSE
+0      high_topopsa     20     1.848556  0.181607  0.241517
+4          low_lumo     20     1.912749  0.164290  0.233445
+3       high_dipole     21     1.477548  0.146922  0.212174
+1           high_mw     20     1.002460  0.116829  0.176667
+7  many_heavy_atoms     21     1.066045  0.112575  0.172380
+2        many_rings     62     1.192692  0.108375  0.153609
+5         high_lumo     20     0.959409  0.080679  0.097143
+6         high_lipo     20     0.920992  0.079279  0.091486
+\n=== SCREENING COUNTS ===
+passes_mw: 494
+passes_polarity: 390
+passes_complexity: 460
+passes_electronic: 474
+passes_all: 379
+\nTop 20 candidates (passes all):
+                       Name  ...  capacity_proxy_mAh_g
+266       141161619_b3lyp_0  ...            289.728056
+263       141161619_b3lyp_3  ...            289.728056
+3     86210053_b3lyp_prop_0  ...            273.446446
+225        15269886_b3lyp_0  ...            306.255491
+224        15269886_b3lyp_1  ...            306.255491
+411        11355645_b3lyp_0  ...            289.710466
+316       130029656_b3lyp_1  ...            311.595714
+261  141161619_b3lyp_prop_1  ...            270.678704
+344        12754795_b3lyp_1  ...            339.234291
+480       102160488_b3lyp_1  ...            286.605563
+329       129812261_b3lyp_0  ...            296.122167
+13              78362_b3lyp  ...            339.234291
+317       130029656_b3lyp_0  ...            311.595714
+259  141161619_b3lyp_prop_3  ...            270.678704
+193          20443080_b3lyp  ...            339.234291
+260  141161619_b3lyp_prop_2  ...            270.678704
+185          212470_b3lyp_2  ...            289.710466
+187          212470_b3lyp_0  ...            289.710466
+262  141161619_b3lyp_prop_0  ...            270.678704
+436        11040862_b3lyp_0  ...            306.255491
+
+[20 rows x 11 columns]
+\n=== FINAL SUMMARY ===
+Best model + feature set: Ridge on X_full | Test RMSE=0.1746, MAE=0.1220, R2=0.8460
+Top 5 important descriptors:
+       feature  coef_abs  coef_rank  n_feature_sets_present
+0      mindsCH  0.165146        1.0                     2.0
+1     minHdsCH  0.161877        2.0                     2.0
+2        VCH-6  0.155143        3.0                     2.0
+3         DELS  0.153121        4.0                     1.0
+4  ETA_BetaP_s  0.151264        5.0                     1.0
+Hardest class: high_topopsa (MAE=0.1816); Easiest class: high_lipo (MAE=0.0793)
+Molecules passing all filters: 379
+Best candidate: 141161619_b3lyp_0 | predicted_redox_potential=2.1047, MW=185.01, TopoPSA=75.00, LUMO=-3.1070, HOMO=-10.9880, capacity_proxy_mAh_g=289.73
