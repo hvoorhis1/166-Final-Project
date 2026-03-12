@@ -1,6 +1,8 @@
+import itertools
 import json
-from dataclasses import dataclass
 import os
+import random
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -10,24 +12,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
-from sklearn.base import clone
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.inspection import permutation_importance
-from sklearn.linear_model import LassoCV, Ridge
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import GridSearchCV, KFold, cross_validate, train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.model_selection import KFold, train_test_split
+
+try:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+except Exception as exc:  # pragma: no cover
+    raise ImportError(
+        "PyTorch is required for this script. Install it in the active environment, e.g. `pip install torch`."
+    ) from exc
 
 plt.style.use("seaborn-v0_8-whitegrid")
 
 RANDOM_STATE = 42
-N_JOBS = 1
 TARGET_COL = "deltaE_V"
 NAME_COL = "Name"
 
+
+def set_seed(seed: int = RANDOM_STATE) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 @dataclass
@@ -38,6 +47,30 @@ class FeatureSet:
     all_df: pd.DataFrame
 
 
+@dataclass
+class Preprocessor:
+    medians: pd.Series
+    means: pd.Series
+    stds: pd.Series
+
+    @staticmethod
+    def fit(df: pd.DataFrame, scale: bool = True) -> "Preprocessor":
+        med = df.median(numeric_only=True)
+        x = df.fillna(med)
+        if scale:
+            means = x.mean()
+            stds = x.std().replace(0, 1.0)
+        else:
+            means = pd.Series(0.0, index=x.columns)
+            stds = pd.Series(1.0, index=x.columns)
+        return Preprocessor(medians=med, means=means, stds=stds)
+
+    def transform(self, df: pd.DataFrame) -> np.ndarray:
+        x = df.fillna(self.medians)
+        x = (x - self.means) / self.stds
+        return x.astype(np.float32).to_numpy()
+
+
 def ensure_dirs(base_dir: Path) -> dict[str, Path]:
     project_dir = base_dir / "project"
     data_dir = project_dir / "data"
@@ -45,12 +78,7 @@ def ensure_dirs(base_dir: Path) -> dict[str, Path]:
     plots_dir = project_dir / "plots"
     for p in [project_dir, data_dir, results_dir, plots_dir]:
         p.mkdir(parents=True, exist_ok=True)
-    return {
-        "project": project_dir,
-        "data": data_dir,
-        "results": results_dir,
-        "plots": plots_dir,
-    }
+    return {"project": project_dir, "data": data_dir, "results": results_dir, "plots": plots_dir}
 
 
 def copy_datasets(source_dir: Path, data_dir: Path) -> dict[str, Path]:
@@ -70,6 +98,25 @@ def copy_datasets(source_dir: Path, data_dir: Path) -> dict[str, Path]:
     return copied
 
 
+def get_train_test(data_paths: dict[str, Path]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    df_full = pd.read_csv(data_paths["DatasetQuinonesFiltered.csv"])
+    if (
+        "DatasetQuinonesFilteredTrain.csv" in data_paths
+        and "DatasetQuinonesFilteredTest.csv" in data_paths
+    ):
+        return (
+            df_full,
+            pd.read_csv(data_paths["DatasetQuinonesFilteredTrain.csv"]),
+            pd.read_csv(data_paths["DatasetQuinonesFilteredTest.csv"]),
+        )
+
+    y_bins = pd.qcut(df_full[TARGET_COL], q=5, labels=False, duplicates="drop")
+    tr, ts = train_test_split(
+        df_full, test_size=0.2, random_state=RANDOM_STATE, stratify=y_bins
+    )
+    return df_full, tr.reset_index(drop=True), ts.reset_index(drop=True)
+
+
 def print_eda(df: pd.DataFrame, plots_dir: Path) -> None:
     print("\\n=== DATASET OVERVIEW ===")
     print(f"Shape: {df.shape}")
@@ -80,27 +127,24 @@ def print_eda(df: pd.DataFrame, plots_dir: Path) -> None:
     print("\\nFirst 10 rows:")
     print(df.head(10))
 
+    y = df[TARGET_COL]
     print("\\n=== TARGET SUMMARY (deltaE_V) ===")
-    target = df[TARGET_COL]
-    summary = {
-        "mean": target.mean(),
-        "std": target.std(),
-        "min": target.min(),
-        "25%": target.quantile(0.25),
-        "median": target.median(),
-        "75%": target.quantile(0.75),
-        "max": target.max(),
-    }
-    for k, v in summary.items():
+    for k, v in {
+        "mean": y.mean(),
+        "std": y.std(),
+        "min": y.min(),
+        "25%": y.quantile(0.25),
+        "median": y.median(),
+        "75%": y.quantile(0.75),
+        "max": y.max(),
+    }.items():
         print(f"{k}: {v:.6f}")
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(target, bins=30, alpha=0.8, edgecolor="black")
-    ax.axvline(target.mean(), color="tab:red", linestyle="--", linewidth=2, label="Mean")
-    ax.axvline(target.median(), color="tab:blue", linestyle="-.", linewidth=2, label="Median")
+    ax.hist(y, bins=30, alpha=0.8, edgecolor="black")
+    ax.axvline(y.mean(), color="tab:red", linestyle="--", linewidth=2, label="Mean")
+    ax.axvline(y.median(), color="tab:blue", linestyle="-.", linewidth=2, label="Median")
     ax.set_title("Distribution of deltaE_V")
-    ax.set_xlabel("deltaE_V")
-    ax.set_ylabel("Count")
     ax.legend()
     fig.tight_layout()
     fig.savefig(plots_dir / "target_distribution.png", dpi=300)
@@ -111,82 +155,44 @@ def print_eda(df: pd.DataFrame, plots_dir: Path) -> None:
 
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     variances = df[numeric_cols].var(numeric_only=True)
-    constant_cols = variances[variances == 0].index.tolist()
-    near_constant_cols = variances[variances < 1e-6].index.tolist()
-    print(f"\\nConstant numeric columns ({len(constant_cols)}): {constant_cols}")
-    print(f"Nearly constant numeric columns ({len(near_constant_cols)}): {near_constant_cols[:20]}")
+    print(f"\\nConstant numeric columns ({(variances == 0).sum()}):")
+    print(variances[variances == 0].index.tolist())
+    print(f"Duplicated rows by {NAME_COL}: {df.duplicated(subset=[NAME_COL]).sum()}")
 
-    dup_name_count = df.duplicated(subset=[NAME_COL]).sum() if NAME_COL in df.columns else 0
-    print(f"\\nDuplicated rows by {NAME_COL}: {dup_name_count}")
+    desc_cols = [c for c in df.columns if c not in [NAME_COL, TARGET_COL]]
+    non_num = [c for c in desc_cols if not pd.api.types.is_numeric_dtype(df[c])]
+    print(f"Non-numeric descriptor columns ({len(non_num)}): {non_num}")
 
-    descriptor_cols = [c for c in df.columns if c not in [NAME_COL, TARGET_COL]]
-    non_numeric_descriptors = [
-        c for c in descriptor_cols if not pd.api.types.is_numeric_dtype(df[c])
-    ]
-    print(
-        f"Non-numeric descriptor columns ({len(non_numeric_descriptors)}): {non_numeric_descriptors}"
-    )
-
-    numeric_desc = [c for c in descriptor_cols if c not in non_numeric_descriptors]
-    corr = df[numeric_desc].corr().abs()
+    num_desc = [c for c in desc_cols if c not in non_num]
+    corr = df[num_desc].corr().abs()
     upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
-    high_corr_pairs = (
-        upper.stack().reset_index().rename(columns={"level_0": "f1", "level_1": "f2", 0: "corr"})
-    )
-    high_corr_pairs = high_corr_pairs[high_corr_pairs["corr"] > 0.95].sort_values("corr", ascending=False)
-    print(f"\\nHigh-correlation descriptor pairs (|r|>0.95): {len(high_corr_pairs)}")
-    if not high_corr_pairs.empty:
-        print(high_corr_pairs.head(20))
+    pairs = upper.stack().reset_index().rename(columns={"level_0": "f1", "level_1": "f2", 0: "corr"})
+    pairs = pairs[pairs["corr"] > 0.95].sort_values("corr", ascending=False)
+    print(f"High-correlation descriptor pairs (|r|>0.95): {len(pairs)}")
 
 
-def get_train_test(data_paths: dict[str, Path]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    df_full = pd.read_csv(data_paths["DatasetQuinonesFiltered.csv"])
-    if (
-        "DatasetQuinonesFilteredTrain.csv" in data_paths
-        and "DatasetQuinonesFilteredTest.csv" in data_paths
-    ):
-        df_tr = pd.read_csv(data_paths["DatasetQuinonesFilteredTrain.csv"])
-        df_tst = pd.read_csv(data_paths["DatasetQuinonesFilteredTest.csv"])
-        print("\\nUsing predefined train/test splits from dataset files.")
-        return df_full, df_tr, df_tst
-
-    print("\\nPredefined split not found; using stratified 80/20 split.")
-    y_bins = pd.qcut(df_full[TARGET_COL], q=5, labels=False, duplicates="drop")
-    df_tr, df_tst = train_test_split(
-        df_full, test_size=0.2, random_state=RANDOM_STATE, stratify=y_bins
-    )
-    return df_full, df_tr.reset_index(drop=True), df_tst.reset_index(drop=True)
-
-
-def choose_numeric_features(df_tr: pd.DataFrame, df_tst: pd.DataFrame) -> tuple[list[str], list[str]]:
+def choose_numeric_features(df_tr: pd.DataFrame, df_tst: pd.DataFrame) -> list[str]:
     candidates = [c for c in df_tr.columns if c not in [NAME_COL, TARGET_COL]]
     numeric = [c for c in candidates if pd.api.types.is_numeric_dtype(df_tr[c])]
-    dropped = [c for c in candidates if c not in numeric]
 
-    train_numeric = df_tr[numeric].copy()
-
-    all_missing = train_numeric.columns[train_numeric.isna().all()].tolist()
-    variance = train_numeric.var(numeric_only=True)
+    xtr = df_tr[numeric].copy()
+    all_missing = xtr.columns[xtr.isna().all()].tolist()
+    variance = xtr.var(numeric_only=True)
     zero_var = variance[variance == 0].index.tolist()
 
     cleaned = [c for c in numeric if c not in set(all_missing + zero_var)]
 
-    corr = train_numeric[cleaned].corr().abs()
+    corr = xtr[cleaned].corr().abs()
     upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
-    to_drop_corr = [column for column in upper.columns if any(upper[column] > 0.95)]
-    cleaned = [c for c in cleaned if c not in to_drop_corr]
-
-    print(f"\\nUsable numeric descriptor columns after cleaning: {len(cleaned)}")
-    print(f"Dropped non-numeric: {len(dropped)}")
-    print(f"Dropped all-missing: {len(all_missing)}")
-    print(f"Dropped zero-variance: {len(zero_var)}")
-    print(f"Dropped high-correlation (>|0.95|): {len(to_drop_corr)}")
+    drop_corr = [c for c in upper.columns if any(upper[c] > 0.95)]
+    cleaned = [c for c in cleaned if c not in drop_corr]
 
     missing_in_test = [c for c in cleaned if c not in df_tst.columns]
     if missing_in_test:
         raise ValueError(f"Missing cleaned features in test set: {missing_in_test}")
 
-    return cleaned, to_drop_corr
+    print(f"Usable numeric descriptor columns after cleaning: {len(cleaned)}")
+    return cleaned
 
 
 def build_feature_sets(
@@ -195,254 +201,284 @@ def build_feature_sets(
     df_tst: pd.DataFrame,
     full_features: list[str],
 ) -> tuple[list[FeatureSet], pd.DataFrame]:
-    impute_log_rows: list[dict[str, Any]] = []
+    xtr = df_tr[full_features].copy()
+    ytr = df_tr[TARGET_COL]
 
-    # Reduced features via LassoCV on standardized + imputed full feature set.
-    reducer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-            (
-                "lasso",
-                LassoCV(
-                    cv=5,
-                    random_state=RANDOM_STATE,
-                    max_iter=20000,
-                    n_alphas=100,
-                ),
-            ),
-        ]
-    )
-    reducer.fit(df_tr[full_features], df_tr[TARGET_COL])
-    coefs = pd.Series(reducer.named_steps["lasso"].coef_, index=full_features)
-    reduced_features = coefs[coefs.abs() > 1e-8].index.tolist()
-    if len(reduced_features) < 10:
-        reduced_features = coefs.abs().sort_values(ascending=False).head(25).index.tolist()
-    print(f"Reduced feature set size: {len(reduced_features)}")
+    corr_to_target = xtr.apply(lambda s: s.fillna(s.median()).corr(ytr), axis=0).abs().fillna(0)
+    reduced_features = corr_to_target.sort_values(ascending=False).head(min(60, len(full_features))).index.tolist()
 
-    for col in full_features:
-        miss_tr = int(df_tr[col].isna().sum())
-        miss_tst = int(df_tst[col].isna().sum())
-        if miss_tr or miss_tst:
-            impute_log_rows.append(
-                {
-                    "column": col,
-                    "missing_train": miss_tr,
-                    "missing_test": miss_tst,
-                    "strategy": "median",
-                }
-            )
+    impute_log = []
+    for c in full_features:
+        tr_miss = int(df_tr[c].isna().sum())
+        ts_miss = int(df_tst[c].isna().sum())
+        if tr_miss or ts_miss:
+            impute_log.append({"column": c, "missing_train": tr_miss, "missing_test": ts_miss, "strategy": "median"})
 
     feature_sets = [
-        FeatureSet(
-            name="X_full",
-            train_df=df_tr[full_features].copy(),
-            test_df=df_tst[full_features].copy(),
-            all_df=df_full[full_features].copy(),
-        ),
-        FeatureSet(
-            name="X_reduced",
-            train_df=df_tr[reduced_features].copy(),
-            test_df=df_tst[reduced_features].copy(),
-            all_df=df_full[reduced_features].copy(),
-        ),
+        FeatureSet("X_full", df_tr[full_features].copy(), df_tst[full_features].copy(), df_full[full_features].copy()),
+        FeatureSet("X_reduced", df_tr[reduced_features].copy(), df_tst[reduced_features].copy(), df_full[reduced_features].copy()),
     ]
-
     for fs in feature_sets:
         print(f"{fs.name} dimensionality: train={fs.train_df.shape}, test={fs.test_df.shape}")
+    return feature_sets, pd.DataFrame(impute_log)
 
-    return feature_sets, pd.DataFrame(impute_log_rows)
+
+def available_cols(df: pd.DataFrame, cols: list[str]) -> list[str]:
+    return [c for c in cols if c in df.columns]
 
 
-def get_models_and_grids() -> dict[str, tuple[Any, dict[str, list[Any]], bool]]:
-    return {
-        "Ridge": (
-            Ridge(random_state=RANDOM_STATE),
-            {"model__alpha": np.logspace(-4, 1, 30).tolist()},
-            True,
-        ),
-        "RandomForest": (
-            RandomForestRegressor(random_state=RANDOM_STATE, n_jobs=N_JOBS),
-            {
-                "model__n_estimators": [50, 100, 300],
-                "model__max_depth": [3, 5, 10],
-                "model__min_samples_leaf": [1, 2],
-                "model__max_features": ["sqrt", None],
-            },
-            False,
-        ),
-        "GradientBoosting": (
-            GradientBoostingRegressor(random_state=RANDOM_STATE),
-            {
-                "model__n_estimators": [10, 30, 50, 100],
-                "model__learning_rate": [0.01, 0.05, 0.1, 0.5],
-            },
-            False,
-        ),
-        "Lasso": (
-            LassoCV(cv=5, random_state=RANDOM_STATE, max_iter=20000),
-            {},
-            True,
-        ),
+def get_physics_sets(df_tr: pd.DataFrame) -> dict[str, list[str]]:
+    a = available_cols(df_tr, ["LUMO"])
+    b = available_cols(df_tr, ["LUMO", "HOMO"])
+    c = available_cols(df_tr, ["LUMO", "HOMO", "dipole_moment", "meanI", "MAXDN2", "MAXDN", "minwHBa"])
+    out = {}
+    if a:
+        out["Phys_A_LUMO"] = a
+    if len(b) >= 2:
+        out["Phys_B_LUMO_HOMO"] = b
+    if len(c) >= 4:
+        out["Phys_C_small_electronic"] = c
+    return out
+
+
+def get_descriptor_families(df_tr: pd.DataFrame) -> dict[str, list[str]]:
+    family_defs = {
+        "frontier_electronic": ["LUMO", "HOMO", "HOMO1", "HOMO2", "LUMO1", "dipole_moment", "P_alpha", "P_beta", "P_gamma"],
+        "hbond_acceptor": ["nHBAcc", "nHBAcc2", "nHBAcc_Lipinski", "minwHBa", "maxwHBa", "MLFER_BH"],
+        "topology_shape": ["nRing", "nFRing", "topoDiameter", "topoRadius", "topoShape", "Kier1", "Kier2", "Kier3", "ETA_Shape_P", "ETA_Shape_Y"],
+        "charge_estate": ["MAXDN", "MAXDN2", "DELS", "DELS2", "GGI1", "GGI2", "GGI3", "JGI1", "JGI2", "JGI3", "SaasC", "maxaasC"],
+        "size_mass_polarity": ["MW", "AMW", "TopoPSA", "VABC", "LipoaffinityIndex", "nAtom", "nHeavyAtom"],
     }
+    return {k: available_cols(df_tr, v) for k, v in family_defs.items() if available_cols(df_tr, v)}
 
 
-def build_pipeline(estimator: Any, scale: bool) -> Pipeline:
-    preprocessor_steps = [("imputer", SimpleImputer(strategy="median"))]
-    if scale:
-        preprocessor_steps.append(("scaler", StandardScaler()))
-    preprocessor = Pipeline(preprocessor_steps)
-
-    return Pipeline(
-        steps=[
-            (
-                "pre",
-                ColumnTransformer(
-                    transformers=[("num", preprocessor, slice(0, None))],
-                    remainder="drop",
-                ),
-            ),
-            ("model", estimator),
-        ]
+def make_torch_mlp_small(input_dim: int, hidden_dim: int = 64, dropout: float = 0.0) -> nn.Module:
+    return nn.Sequential(
+        nn.Linear(input_dim, hidden_dim),
+        nn.ReLU(),
+        nn.Dropout(dropout),
+        nn.Linear(hidden_dim, 1),
     )
 
 
-def evaluate_feature_sets(
-    feature_sets: list[FeatureSet],
-    y_tr: pd.Series,
-    y_tst: pd.Series,
-    plots_dir: Path,
-) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
-    models = get_models_and_grids()
-    results = []
-    best_objects: dict[str, dict[str, Any]] = {}
+def train_torch_mlp_small(x_train: np.ndarray, y_train: np.ndarray, params: dict[str, Any]) -> nn.Module:
+    set_seed()
+    model = make_torch_mlp_small(
+        input_dim=x_train.shape[1],
+        hidden_dim=int(params.get("hidden_dim", 64)),
+        dropout=float(params.get("dropout", 0.0)),
+    )
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=float(params.get("lr", 1e-3)),
+        weight_decay=float(params.get("weight_decay", 0.0)),
+    )
+    loss_fn = nn.MSELoss()
 
-    cv = KFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-    scoring = {
-        "rmse": "neg_root_mean_squared_error",
-        "mae": "neg_mean_absolute_error",
-        "r2": "r2",
+    ds = TensorDataset(
+        torch.from_numpy(x_train),
+        torch.from_numpy(y_train.astype(np.float32).reshape(-1, 1)),
+    )
+    loader = DataLoader(ds, batch_size=int(params.get("batch_size", 64)), shuffle=True)
+
+    model.train()
+    for _ in range(int(params.get("epochs", 300))):
+        for xb, yb in loader:
+            optimizer.zero_grad()
+            pred = model(xb)
+            loss = loss_fn(pred, yb)
+            loss.backward()
+            optimizer.step()
+    return model
+
+
+def train_sklearn_model(model_name: str, x_train: np.ndarray, y_train: np.ndarray, params: dict[str, Any]):
+    if model_name == "LinearRegression":
+        model = LinearRegression()
+    elif model_name == "Ridge":
+        model = Ridge(alpha=float(params["alpha"]), random_state=RANDOM_STATE)
+    elif model_name == "RandomForest":
+        model = RandomForestRegressor(
+            n_estimators=int(params["n_estimators"]),
+            max_depth=params["max_depth"],
+            min_samples_leaf=int(params["min_samples_leaf"]),
+            max_features=params["max_features"],
+            random_state=RANDOM_STATE,
+            n_jobs=1,
+        )
+    else:
+        raise ValueError(f"Unknown sklearn model: {model_name}")
+    model.fit(x_train, y_train)
+    return model
+
+
+def predict_model(model_name: str, model: Any, x: np.ndarray) -> np.ndarray:
+    if model_name == "TorchMLPSmall":
+        model.eval()
+        with torch.no_grad():
+            return model(torch.from_numpy(x)).squeeze(1).cpu().numpy()
+    return model.predict(x)
+
+
+def grid_dicts(space: dict[str, list[Any]]) -> list[dict[str, Any]]:
+    keys = list(space.keys())
+    vals = [space[k] for k in keys]
+    return [dict(zip(keys, combo)) for combo in itertools.product(*vals)]
+
+
+def get_model_specs() -> dict[str, dict[str, Any]]:
+    return {
+        "LinearRegression": {
+            "scale": True,
+            "grid": {"dummy": [0]},
+            "cv_x": "dummy",
+        },
+        "Ridge": {
+            "scale": True,
+            "grid": {"alpha": [1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0]},
+            "cv_x": "alpha",
+        },
+        "RandomForest": {
+            "scale": False,
+            "grid": {
+                "n_estimators": [100, 300],
+                "max_depth": [5, 10],
+                "min_samples_leaf": [1, 2],
+                "max_features": ["sqrt"],
+            },
+            "cv_x": "max_depth",
+        },
+        "TorchMLPSmall": {
+            "scale": True,
+            "grid": {
+                "hidden_dim": [64, 128],
+                "dropout": [0.0, 0.1],
+                "lr": [1e-3],
+                "weight_decay": [1e-5, 1e-4],
+                "epochs": [350],
+                "batch_size": [64],
+            },
+            "cv_x": "hidden_dim",
+        },
     }
 
-    for fs in feature_sets:
-        X_tr = fs.train_df
-        X_tst = fs.test_df
 
-        for model_name, (estimator, param_grid, scale_flag) in models.items():
-            pipe = build_pipeline(estimator, scale=scale_flag)
-
-            if isinstance(estimator, LassoCV):
-                cv_scores = cross_validate(
-                    pipe,
-                    X_tr,
-                    y_tr,
-                cv=cv,
-                scoring=scoring,
-                return_train_score=False,
-                n_jobs=N_JOBS,
-                )
-                pipe.fit(X_tr, y_tr)
-                best_est = pipe
-                best_params = {
-                    "alpha": float(
-                        best_est.named_steps["model"].alpha_
-                    ),
-                    "nonzero_coef": int(
-                        np.sum(np.abs(best_est.named_steps["model"].coef_) > 1e-8)
-                    ),
-                }
-                cv_results = None
-            else:
-                gs = GridSearchCV(
-                    estimator=pipe,
-                    param_grid=param_grid,
-                    scoring="r2",
-                    cv=cv,
-                    n_jobs=N_JOBS,
-                    return_train_score=True,
-                )
-                gs.fit(X_tr, y_tr)
-                best_est = gs.best_estimator_
-                best_params = gs.best_params_
-                cv_results = gs.cv_results_
-
-                cv_scores = cross_validate(
-                    clone(best_est),
-                    X_tr,
-                    y_tr,
-                    cv=cv,
-                    scoring=scoring,
-                    return_train_score=False,
-                    n_jobs=N_JOBS,
-                )
-
-            y_pred = best_est.predict(X_tst)
-            test_rmse = np.sqrt(mean_squared_error(y_tst, y_pred))
-            test_mae = mean_absolute_error(y_tst, y_pred)
-            test_r2 = r2_score(y_tst, y_pred)
-
-            row = {
-                "model": model_name,
-                "feature_set": fs.name,
-                "best_params": json.dumps(best_params),
-                "cv_rmse_mean": float(-cv_scores["test_rmse"].mean()),
-                "cv_rmse_std": float(cv_scores["test_rmse"].std()),
-                "cv_mae_mean": float(-cv_scores["test_mae"].mean()),
-                "cv_mae_std": float(cv_scores["test_mae"].std()),
-                "cv_r2_mean": float(cv_scores["test_r2"].mean()),
-                "cv_r2_std": float(cv_scores["test_r2"].std()),
-                "test_rmse": float(test_rmse),
-                "test_mae": float(test_mae),
-                "test_r2": float(test_r2),
-            }
-            results.append(row)
-
-            key = f"{model_name}::{fs.name}"
-            best_objects[key] = {
-                "model_name": model_name,
-                "feature_set": fs,
-                "estimator": best_est,
-                "best_params": best_params,
-                "cv_results": cv_results,
-                "y_pred_test": y_pred,
-            }
-
-            print(
-                f"{model_name} on {fs.name}: test RMSE={test_rmse:.4f}, MAE={test_mae:.4f}, R2={test_r2:.4f}"
-            )
-
-    results_df = pd.DataFrame(results).sort_values(by="test_r2", ascending=False)
-    return results_df, best_objects
+def fit_model(model_name: str, x_train: np.ndarray, y_train: np.ndarray, params: dict[str, Any]):
+    if model_name == "TorchMLPSmall":
+        return train_torch_mlp_small(x_train, y_train, params)
+    return train_sklearn_model(model_name, x_train, y_train, params)
 
 
-def plot_cv_curve(cv_results: dict[str, Any], model_name: str, out_path: Path) -> None:
-    if cv_results is None:
-        return
+def cv_for_params(
+    model_name: str,
+    x_df: pd.DataFrame,
+    y: pd.Series,
+    params: dict[str, Any],
+    scale: bool,
+) -> dict[str, float]:
+    kf = KFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+    rmses, maes, r2s = [], [], []
 
-    df = pd.DataFrame(cv_results)
+    for tr_idx, va_idx in kf.split(x_df):
+        x_tr_df, x_va_df = x_df.iloc[tr_idx], x_df.iloc[va_idx]
+        y_tr, y_va = y.iloc[tr_idx].to_numpy(), y.iloc[va_idx].to_numpy()
+
+        prep = Preprocessor.fit(x_tr_df, scale=scale)
+        x_tr = prep.transform(x_tr_df)
+        x_va = prep.transform(x_va_df)
+
+        model = fit_model(model_name, x_tr, y_tr, params)
+        y_hat = predict_model(model_name, model, x_va)
+
+        rmses.append(np.sqrt(mean_squared_error(y_va, y_hat)))
+        maes.append(mean_absolute_error(y_va, y_hat))
+        r2s.append(r2_score(y_va, y_hat))
+
+    return {
+        "cv_rmse_mean": float(np.mean(rmses)),
+        "cv_rmse_std": float(np.std(rmses)),
+        "cv_mae_mean": float(np.mean(maes)),
+        "cv_mae_std": float(np.std(maes)),
+        "cv_r2_mean": float(np.mean(r2s)),
+        "cv_r2_std": float(np.std(r2s)),
+    }
+
+
+def evaluate_experiment(
+    model_name: str,
+    feature_set_name: str,
+    x_tr_df: pd.DataFrame,
+    x_tst_df: pd.DataFrame,
+    x_all_df: pd.DataFrame,
+    y_tr: pd.Series,
+    y_tst: pd.Series,
+    specs: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    cfg = specs[model_name]
+    candidates = grid_dicts(cfg["grid"])
+    cv_records = []
+    best_score = -np.inf
+    best_params = None
+    best_cv = None
+
+    for p in candidates:
+        metrics = cv_for_params(model_name, x_tr_df, y_tr, p, cfg["scale"])
+        cv_records.append({"params": p, **metrics})
+        if metrics["cv_r2_mean"] > best_score:
+            best_score = metrics["cv_r2_mean"]
+            best_params = p
+            best_cv = metrics
+
+    assert best_params is not None and best_cv is not None
+
+    prep = Preprocessor.fit(x_tr_df, scale=cfg["scale"])
+    xtr = prep.transform(x_tr_df)
+    xts = prep.transform(x_tst_df)
+
+    model = fit_model(model_name, xtr, y_tr.to_numpy(), best_params)
+    y_pred = predict_model(model_name, model, xts)
+
+    high_cut = y_tst.quantile(0.8)
+    high_mask = y_tst >= high_cut
+    y_tst_high = y_tst[high_mask]
+    y_pred_high = y_pred[high_mask.to_numpy()]
+
+    row = {
+        "model": model_name,
+        "feature_set": feature_set_name,
+        "best_params": json.dumps(best_params),
+        **best_cv,
+        "test_rmse": float(np.sqrt(mean_squared_error(y_tst, y_pred))),
+        "test_mae": float(mean_absolute_error(y_tst, y_pred)),
+        "test_r2": float(r2_score(y_tst, y_pred)),
+        "high_rmse": float(np.sqrt(mean_squared_error(y_tst_high, y_pred_high))),
+        "high_mae": float(mean_absolute_error(y_tst_high, y_pred_high)),
+        "high_bias": float(np.mean(y_pred_high - y_tst_high.to_numpy())),
+    }
+
+    obj = {
+        "model_name": model_name,
+        "feature_set": feature_set_name,
+        "preprocessor": prep,
+        "model": model,
+        "cv_records": cv_records,
+        "cv_x": cfg["cv_x"],
+        "x_all_df": x_all_df,
+        "y_pred_test": y_pred,
+    }
+    return row, obj
+
+
+def plot_cv_curve(cv_records: list[dict[str, Any]], x_key: str, title: str, out_path: Path) -> None:
+    df = pd.DataFrame(cv_records)
+    grp = df.groupby(df["params"].apply(lambda p: p.get(x_key, 0)))["cv_r2_mean"].max().sort_index()
     fig, ax = plt.subplots(figsize=(8, 5))
-
-    if model_name == "Ridge":
-        x = df["param_model__alpha"].astype(float)
-        ax.plot(x, df["mean_test_score"], marker="o", label="CV R2")
-        ax.plot(x, df["mean_train_score"], marker="x", label="Train R2")
+    ax.plot(grp.index, grp.values, marker="o")
+    if x_key in ["alpha", "weight_decay"]:
         ax.set_xscale("log")
-        ax.set_xlabel("alpha")
-    elif model_name == "RandomForest":
-        group = df.groupby("param_model__max_depth", dropna=False)["mean_test_score"].max()
-        x = [str(v) for v in group.index]
-        ax.plot(x, group.values, marker="o", label="Best CV R2 by max_depth")
-        ax.set_xlabel("max_depth")
-    elif model_name == "GradientBoosting":
-        for lr in sorted(df["param_model__learning_rate"].astype(float).unique()):
-            sub = df[df["param_model__learning_rate"].astype(float) == lr]
-            grp = sub.groupby("param_model__n_estimators")["mean_test_score"].max().sort_index()
-            ax.plot(grp.index.astype(int), grp.values, marker="o", label=f"lr={lr}")
-        ax.set_xlabel("n_estimators")
-
+    ax.set_xlabel(x_key)
     ax.set_ylabel("Mean CV R2")
-    ax.set_title(f"CV Tuning Curve: {model_name}")
-    ax.legend(loc="best")
+    ax.set_title(title)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
@@ -453,14 +489,7 @@ def plot_test_scatter(y_true: pd.Series, y_pred: np.ndarray, title: str, out_pat
     ax.scatter(y_true, y_pred, alpha=0.8, label="Predictions")
     min_v = min(y_true.min(), y_pred.min())
     max_v = max(y_true.max(), y_pred.max())
-    ax.plot(
-        [min_v, max_v],
-        [min_v, max_v],
-        color="tab:red",
-        linestyle="--",
-        linewidth=2,
-        label="Ideal y=x",
-    )
+    ax.plot([min_v, max_v], [min_v, max_v], "--", color="tab:red", linewidth=2, label="Ideal y=x")
     z = np.polyfit(y_true, y_pred, 1)
     p = np.poly1d(z)
     xs = np.linspace(min_v, max_v, 100)
@@ -476,56 +505,50 @@ def plot_test_scatter(y_true: pd.Series, y_pred: np.ndarray, title: str, out_pat
 
 def plot_model_comparison(results_df: pd.DataFrame, metric: str, out_path: Path) -> None:
     pivot = results_df.pivot_table(index="model", columns="feature_set", values=metric)
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(11, 6))
     pivot.plot(kind="bar", ax=ax)
     ax.set_ylabel(metric)
     ax.set_title(f"Model Comparison: {metric}")
-    ax.legend(title="Feature Set")
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
 
 
-def top_feature_plot(
-    feature_names: list[str],
-    values: np.ndarray,
-    out_path: Path,
-    title: str,
-    color_by_sign: bool = False,
-) -> pd.DataFrame:
-    ser = pd.Series(values, index=feature_names)
-    top = ser.abs().sort_values(ascending=False).head(25)
-    plot_vals = ser[top.index]
-
-    fig, ax = plt.subplots(figsize=(10, 7))
-    if color_by_sign:
-        colors = ["tab:blue" if v >= 0 else "tab:red" for v in plot_vals.values]
-    else:
-        colors = "tab:blue"
-    ax.barh(plot_vals.index[::-1], plot_vals.values[::-1], color=colors)
+def plot_top_features(feature_df: pd.DataFrame, out_path: Path, top_n: int = 25) -> None:
+    if feature_df.empty:
+        return
+    value_col = None
+    title = "Top Descriptor Importance"
+    if "coef_abs" in feature_df.columns:
+        value_col = "coef_abs"
+        title = "Top Descriptor Importance (|Ridge Coefficients|)"
+    elif "rf_importance" in feature_df.columns:
+        value_col = "rf_importance"
+        title = "Top Descriptor Importance (RandomForest)"
+    elif "corr_proxy" in feature_df.columns:
+        value_col = "corr_proxy"
+        title = "Top Descriptor Importance (Correlation Proxy)"
+    if value_col is None:
+        return
+    top = feature_df.sort_values(value_col, ascending=False).head(top_n)
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.barh(top["feature"][::-1], top[value_col][::-1], color="tab:blue")
+    ax.set_xlabel(value_col)
     ax.set_title(title)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
 
-    return plot_vals.to_frame("importance").reset_index().rename(columns={"index": "feature"})
 
-
-def residual_analysis(
-    names: pd.Series,
-    y_true: pd.Series,
-    y_pred: np.ndarray,
-    plots_dir: Path,
-) -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame]:
+def residual_analysis(names: pd.Series, y_true: pd.Series, y_pred: np.ndarray, plots_dir: Path) -> tuple[pd.DataFrame, dict[str, float]]:
     residuals = y_true - y_pred
-
     plot_test_scatter(y_true, y_pred, "Predicted vs Actual", plots_dir / "predicted_vs_actual.png")
 
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.scatter(y_pred, residuals, alpha=0.8)
     ax.axhline(0, color="tab:red", linestyle="--")
     ax.set_xlabel("Predicted deltaE_V")
-    ax.set_ylabel("Residuals")
+    ax.set_ylabel("Residual")
     ax.set_title("Residuals vs Predicted")
     fig.tight_layout()
     fig.savefig(plots_dir / "residuals_vs_predicted.png", dpi=300)
@@ -547,176 +570,126 @@ def residual_analysis(
             "absolute_error": np.abs(residuals),
         }
     ).sort_values("absolute_error", ascending=False)
-
-    y_bins = pd.qcut(y_true, q=5, duplicates="drop")
-    by_bin = (
-        pd.DataFrame({"bin": y_bins, "actual": y_true, "pred": y_pred})
-        .groupby("bin")
-        .apply(
-            lambda g: pd.Series(
-                {
-                    "count": len(g),
-                    "MAE": mean_absolute_error(g["actual"], g["pred"]),
-                    "RMSE": np.sqrt(mean_squared_error(g["actual"], g["pred"])),
-                }
-            )
-        )
-        .reset_index()
-    )
-
-    return err_df, stats_dict, by_bin
+    return err_df, stats_dict
 
 
-def descriptor_class_analysis(
-    df_test: pd.DataFrame,
-    y_true: pd.Series,
-    y_pred: np.ndarray,
-    plots_dir: Path,
-) -> pd.DataFrame:
-    residual_abs = np.abs(y_true - y_pred)
-    df = df_test.copy()
-    df["abs_err"] = residual_abs
-    df["actual"] = y_true.values
-    df["pred"] = y_pred
-
-    classes: dict[str, pd.Series] = {}
-    potential_cols = {
-        "high_topopsa": "TopoPSA",
-        "high_mw": "MW",
-        "many_rings": "nRing",
-        "high_dipole": "dipole_moment",
-        "low_lumo": "LUMO",
-        "high_lumo": "LUMO",
-        "high_lipo": "LipoaffinityIndex",
-        "many_heavy_atoms": "nHeavyAtom",
-    }
-
-    for cname, col in potential_cols.items():
-        if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
-            if cname.startswith("low_"):
-                thresh = df[col].quantile(0.2)
-                classes[cname] = df[col] <= thresh
-            else:
-                thresh = df[col].quantile(0.8)
-                classes[cname] = df[col] >= thresh
-
-    rows = []
-    for cname, mask in classes.items():
-        sub = df[mask]
-        if len(sub) < 5:
+def pareto_frontier(df: pd.DataFrame, x_col: str, y_col: str) -> pd.Series:
+    arr = df[[x_col, y_col]].to_numpy()
+    is_pareto = np.ones(arr.shape[0], dtype=bool)
+    for i, point in enumerate(arr):
+        if not is_pareto[i]:
             continue
-        mae = mean_absolute_error(sub["actual"], sub["pred"])
-        rmse = np.sqrt(mean_squared_error(sub["actual"], sub["pred"]))
-        rows.append(
-            {
-                "class": cname,
-                "count": len(sub),
-                "mean_target": sub["actual"].mean(),
-                "MAE": mae,
-                "RMSE": rmse,
-            }
-        )
-
-    class_df = pd.DataFrame(rows).sort_values("MAE", ascending=False)
-    return class_df
+        dominates = np.all(arr >= point, axis=1) & np.any(arr > point, axis=1)
+        if dominates.any():
+            is_pareto[i] = False
+    return pd.Series(is_pareto, index=df.index)
 
 
 def screening_pipeline(
     df_full: pd.DataFrame,
     fs: FeatureSet,
-    best_estimator: Pipeline,
+    prep: Preprocessor,
+    model: Any,
+    model_name: str,
     y_train: pd.Series,
     results_dir: Path,
     plots_dir: Path,
 ) -> pd.DataFrame:
-    preds = best_estimator.predict(fs.all_df)
+    x_all = prep.transform(fs.all_df)
+    preds = predict_model(model_name, model, x_all)
     out = pd.DataFrame({NAME_COL: df_full[NAME_COL], "predicted_redox_potential": preds})
 
-    needed_cols = [
-        "MW",
-        "TopoPSA",
-        "LipoaffinityIndex",
-        "dipole_moment",
-        "nRing",
-        "VABC",
-        "LUMO",
-        "HOMO",
-        "nAtom",
-        "nHeavyAtom",
-        "topoDiameter",
-    ]
-    for c in needed_cols:
+    for c in ["MW", "TopoPSA", "LipoaffinityIndex", "dipole_moment", "nRing", "VABC", "LUMO", "HOMO", "nAtom", "nHeavyAtom", "topoDiameter"]:
         out[c] = df_full[c] if c in df_full.columns else np.nan
 
     F_CONST = 96485.33212
-    out["capacity_proxy_mAh_g"] = 2 * F_CONST / (3.6 * out["MW"]) 
+    out["capacity_proxy_mAh_g"] = 2 * F_CONST / (3.6 * out["MW"])
 
-    # Thresholds from data distributions.
-    mw_pass = out["MW"] <= 500
-
-    pol_mask = pd.Series(True, index=out.index)
-    if "TopoPSA" in out.columns:
-        lo, hi = out["TopoPSA"].quantile([0.05, 0.95])
-        pol_mask &= out["TopoPSA"].between(lo, hi)
-    if "LipoaffinityIndex" in out.columns:
-        lo, hi = out["LipoaffinityIndex"].quantile([0.05, 0.95])
-        pol_mask &= out["LipoaffinityIndex"].between(lo, hi)
-    if "dipole_moment" in out.columns and out["dipole_moment"].notna().any():
-        lo, hi = out["dipole_moment"].quantile([0.05, 0.95])
-        pol_mask &= out["dipole_moment"].between(lo, hi)
-
-    comp_mask = pd.Series(True, index=out.index)
-    for col in ["nAtom", "nHeavyAtom", "VABC", "nRing", "topoDiameter"]:
-        if col in out.columns and out[col].notna().any():
-            comp_mask &= out[col] <= out[col].quantile(0.95)
-
-    elec_mask = pd.Series(True, index=out.index)
-    for col in ["LUMO", "HOMO"]:
-        if col in out.columns and out[col].notna().any():
-            lo, hi = out[col].quantile([0.01, 0.99])
-            elec_mask &= out[col].between(lo, hi)
-
-    pred_lo, pred_hi = np.quantile(y_train, [0.01, 0.99])
-    elec_mask &= out["predicted_redox_potential"].between(pred_lo, pred_hi)
-
-    out["passes_mw"] = mw_pass
-    out["passes_polarity"] = pol_mask
-    out["passes_complexity"] = comp_mask
-    out["passes_electronic"] = elec_mask
-    out["passes_all"] = (
-        out["passes_mw"]
-        & out["passes_polarity"]
-        & out["passes_complexity"]
-        & out["passes_electronic"]
+    # Multi-objective score with penalties.
+    norm_pred = (out["predicted_redox_potential"] - out["predicted_redox_potential"].min()) / (
+        out["predicted_redox_potential"].max() - out["predicted_redox_potential"].min() + 1e-12
     )
+    norm_cap = (out["capacity_proxy_mAh_g"] - out["capacity_proxy_mAh_g"].min()) / (
+        out["capacity_proxy_mAh_g"].max() - out["capacity_proxy_mAh_g"].min() + 1e-12
+    )
+
+    penalty = pd.Series(0.0, index=out.index)
+    for c in ["MW", "LipoaffinityIndex", "TopoPSA", "nAtom", "nHeavyAtom", "VABC", "nRing", "topoDiameter", "LUMO", "HOMO"]:
+        if out[c].notna().any():
+            z = (out[c] - out[c].mean()) / (out[c].std() + 1e-12)
+            penalty += np.clip(np.abs(z) - 2.0, 0, None)
+    penalty = penalty / (penalty.max() + 1e-12)
+
+    out["screen_score"] = 0.50 * norm_pred + 0.35 * norm_cap - 0.15 * penalty
+    out["screen_rank"] = out["screen_score"].rank(ascending=False, method="min").astype(int)
+
+    # Keep strict practical filters as hard constraints.
+    out["passes_mw"] = out["MW"] <= 500
+    pol = pd.Series(True, index=out.index)
+    for c in ["TopoPSA", "LipoaffinityIndex", "dipole_moment"]:
+        if out[c].notna().any():
+            lo, hi = out[c].quantile([0.05, 0.95])
+            pol &= out[c].between(lo, hi)
+    out["passes_polarity"] = pol
+
+    comp = pd.Series(True, index=out.index)
+    for c in ["nAtom", "nHeavyAtom", "VABC", "nRing", "topoDiameter"]:
+        if out[c].notna().any():
+            comp &= out[c] <= out[c].quantile(0.95)
+    out["passes_complexity"] = comp
+
+    elec = pd.Series(True, index=out.index)
+    for c in ["LUMO", "HOMO"]:
+        if out[c].notna().any():
+            lo, hi = out[c].quantile([0.01, 0.99])
+            elec &= out[c].between(lo, hi)
+    p_lo, p_hi = np.quantile(y_train, [0.01, 0.99])
+    elec &= out["predicted_redox_potential"].between(p_lo, p_hi)
+    out["passes_electronic"] = elec
+    out["passes_all"] = out["passes_mw"] & out["passes_polarity"] & out["passes_complexity"] & out["passes_electronic"]
+
+    out["pareto_frontier"] = pareto_frontier(out, "capacity_proxy_mAh_g", "predicted_redox_potential")
 
     out.to_csv(results_dir / "screening_results.csv", index=False)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    colors = out["passes_all"].map({True: "tab:green", False: "tab:gray"})
-    ax.scatter(out["capacity_proxy_mAh_g"], out["predicted_redox_potential"], c=colors, alpha=0.8)
+    top20 = out.sort_values("screen_score", ascending=False).head(20).copy()
+    top20.to_csv(results_dir / "top20_candidates.csv", index=False)
+
+    # Pareto + ranked screening plot
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.scatter(out["capacity_proxy_mAh_g"], out["predicted_redox_potential"], c="lightgray", alpha=0.6, label="All")
+    top_idx = out.sort_values("screen_score", ascending=False).head(50).index
+    ax.scatter(
+        out.loc[top_idx, "capacity_proxy_mAh_g"],
+        out.loc[top_idx, "predicted_redox_potential"],
+        c="tab:blue",
+        alpha=0.8,
+        label="Top 50 by score",
+    )
+    pf = out[out["pareto_frontier"]]
+    ax.scatter(pf["capacity_proxy_mAh_g"], pf["predicted_redox_potential"], c="tab:red", alpha=0.9, label="Pareto")
     ax.set_xlabel("Capacity proxy (mAh/g)")
     ax.set_ylabel("Predicted redox potential")
-    ax.set_title("Screening: Predicted Potential vs Capacity Proxy")
+    ax.set_title("Screening: Pareto + Ranked Candidates")
+    ax.legend()
     fig.tight_layout()
-    fig.savefig(plots_dir / "screening_scatter.png", dpi=300)
+    fig.savefig(plots_dir / "pareto_ranked_screening.png", dpi=300)
     plt.close(fig)
 
-    print("\\n=== SCREENING COUNTS ===")
-    for col in ["passes_mw", "passes_polarity", "passes_complexity", "passes_electronic", "passes_all"]:
-        print(f"{col}: {int(out[col].sum())}")
+    print("\\n=== SCREENING SUMMARY ===")
+    print(f"Top 10 by score: {len(out.sort_values('screen_score', ascending=False).head(10))}")
+    print(f"Top 20 by score: {len(out.sort_values('screen_score', ascending=False).head(20))}")
+    print(f"Top 50 by score: {len(out.sort_values('screen_score', ascending=False).head(50))}")
+    print(f"Top 5% by score count: {int(np.ceil(0.05 * len(out)))}")
 
-    top20 = (
-        out[out["passes_all"]]
-        .sort_values("predicted_redox_potential", ascending=False)
-        .head(20)
-    )
-    print("\\nTop 20 candidates (passes all):")
+    print("\\n=== TOP 20 CANDIDATES (by screen_score) ===")
     print(
         top20[
             [
                 NAME_COL,
+                "screen_score",
                 "predicted_redox_potential",
+                "capacity_proxy_mAh_g",
                 "MW",
                 "TopoPSA",
                 "LipoaffinityIndex",
@@ -725,198 +698,234 @@ def screening_pipeline(
                 "VABC",
                 "LUMO",
                 "HOMO",
-                "capacity_proxy_mAh_g",
+                "passes_all",
+                "pareto_frontier",
             ]
         ]
     )
-
     return out
 
 
 def main() -> None:
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
     Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+    set_seed()
 
     base_dir = Path(__file__).resolve().parents[1]
-    source_data_dir = Path("/Users/harryvoorhis/Downloads/org-redox-dataset-main/datasets")
-
     dirs = ensure_dirs(base_dir)
     for png in dirs["plots"].glob("*.png"):
         png.unlink()
-    data_paths = copy_datasets(source_data_dir, dirs["data"])
 
-    required = "DatasetQuinonesFiltered.csv"
-    if required not in data_paths:
-        raise FileNotFoundError(f"Missing required dataset: {required}")
+    source_data_dir = Path("/Users/harryvoorhis/Downloads/org-redox-dataset-main/datasets")
+    data_paths = copy_datasets(source_data_dir, dirs["data"])
+    if "DatasetQuinonesFiltered.csv" not in data_paths:
+        raise FileNotFoundError("Missing DatasetQuinonesFiltered.csv")
 
     df_full, df_tr, df_tst = get_train_test(data_paths)
-
     print_eda(df_full, dirs["plots"])
 
-    full_features, dropped_corr = choose_numeric_features(df_tr, df_tst)
+    full_features = choose_numeric_features(df_tr, df_tst)
     feature_sets, impute_log = build_feature_sets(df_full, df_tr, df_tst, full_features)
     impute_log.to_csv(dirs["data"] / "preprocessing_log.csv", index=False)
 
     y_tr = df_tr[TARGET_COL]
     y_tst = df_tst[TARGET_COL]
 
-    results_df, best_objects = evaluate_feature_sets(feature_sets, y_tr, y_tst, dirs["plots"])
+    # Build experiment matrix
+    specs = get_model_specs()
+    fs_map = {fs.name: fs for fs in feature_sets}
+
+    experiments: list[tuple[str, str, pd.DataFrame, pd.DataFrame, pd.DataFrame]] = []
+
+    # Physics-informed baselines (A/B/C): linear + ridge
+    phys_sets = get_physics_sets(df_tr)
+    for pname, cols in phys_sets.items():
+        experiments.append(("LinearRegression", pname, df_tr[cols], df_tst[cols], df_full[cols]))
+        experiments.append(("Ridge", pname, df_tr[cols], df_tst[cols], df_full[cols]))
+
+    # Full-model comparisons on X_full
+    x_full = fs_map["X_full"]
+    experiments.extend(
+        [
+            ("Ridge", "X_full", x_full.train_df, x_full.test_df, x_full.all_df),
+            ("RandomForest", "X_full", x_full.train_df, x_full.test_df, x_full.all_df),
+            ("TorchMLPSmall", "X_full", x_full.train_df, x_full.test_df, x_full.all_df),
+        ]
+    )
+
+    # Keep reduced set variants for context
+    x_red = fs_map["X_reduced"]
+    experiments.extend(
+        [
+            ("Ridge", "X_reduced", x_red.train_df, x_red.test_df, x_red.all_df),
+            ("RandomForest", "X_reduced", x_red.train_df, x_red.test_df, x_red.all_df),
+            ("TorchMLPSmall", "X_reduced", x_red.train_df, x_red.test_df, x_red.all_df),
+        ]
+    )
+
+    rows = []
+    objects: dict[str, dict[str, Any]] = {}
+    for model_name, fs_name, xtr_df, xts_df, xall_df in experiments:
+        row, obj = evaluate_experiment(model_name, fs_name, xtr_df, xts_df, xall_df, y_tr, y_tst, specs)
+        rows.append(row)
+        key = f"{model_name}::{fs_name}"
+        objects[key] = obj
+        print(
+            f"{model_name} on {fs_name}: test RMSE={row['test_rmse']:.4f}, "
+            f"MAE={row['test_mae']:.4f}, R2={row['test_r2']:.4f}"
+        )
+
+    results_df = pd.DataFrame(rows).sort_values("test_r2", ascending=False)
     results_df.to_csv(dirs["results"] / "model_comparison.csv", index=False)
 
-    # Best per model across feature sets for CV + scatter plots.
-    for model_name, cv_plot in [
-        ("Ridge", "cv_ridge.png"),
-        ("RandomForest", "cv_random_forest.png"),
-        ("GradientBoosting", "cv_gradient_boosting.png"),
-    ]:
-        subset = results_df[results_df["model"] == model_name].sort_values("test_r2", ascending=False)
-        if subset.empty:
-            continue
-        best_row = subset.iloc[0]
-        key = f"{model_name}::{best_row['feature_set']}"
-        plot_cv_curve(best_objects[key]["cv_results"], model_name, dirs["plots"] / cv_plot)
-
-    for model_name, scatter_plot in [
-        ("Ridge", "ridge_test_scatter.png"),
-        ("RandomForest", "random_forest_test_scatter.png"),
-        ("GradientBoosting", "gradient_boosting_test_scatter.png"),
-    ]:
-        subset = results_df[results_df["model"] == model_name].sort_values("test_r2", ascending=False)
-        if subset.empty:
-            continue
-        best_row = subset.iloc[0]
-        key = f"{model_name}::{best_row['feature_set']}"
-        plot_test_scatter(
+    # Descriptor-family comparison with Ridge only
+    families = get_descriptor_families(df_tr)
+    fam_rows = []
+    for fam_name, cols in families.items():
+        row, _ = evaluate_experiment(
+            "Ridge",
+            f"family_{fam_name}",
+            df_tr[cols],
+            df_tst[cols],
+            df_full[cols],
+            y_tr,
             y_tst,
-            best_objects[key]["y_pred_test"],
-            f"{model_name} Predicted vs Actual",
-            dirs["plots"] / scatter_plot,
+            specs,
         )
+        fam_rows.append({"family": fam_name, "test_r2": row["test_r2"], "test_rmse": row["test_rmse"]})
+    family_df = pd.DataFrame(fam_rows).sort_values("test_r2", ascending=False)
+    family_df.to_csv(dirs["results"] / "descriptor_family_performance.csv", index=False)
+
+    # Plot: family performance
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar(family_df["family"], family_df["test_r2"], color="tab:blue")
+    ax.set_ylabel("Test R2")
+    ax.set_title("Descriptor Family Performance (Ridge)")
+    ax.set_xticklabels(family_df["family"], rotation=25, ha="right")
+    fig.tight_layout()
+    fig.savefig(dirs["plots"] / "descriptor_family_performance.png", dpi=300)
+    plt.close(fig)
+
+    # Physics baseline vs full ML chart
+    mask_phys = results_df["feature_set"].str.startswith("Phys_")
+    mask_full = (results_df["feature_set"] == "X_full") & (results_df["model"].isin(["Ridge", "RandomForest", "TorchMLPSmall"]))
+    phys_ml_df = results_df[mask_phys | mask_full].copy()
+    phys_ml_df["label"] = phys_ml_df["feature_set"] + "|" + phys_ml_df["model"]
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.bar(phys_ml_df["label"], phys_ml_df["test_r2"], color="tab:green")
+    ax.set_ylabel("Test R2")
+    ax.set_title("Physics Baselines vs Full ML")
+    ax.set_xticklabels(phys_ml_df["label"], rotation=35, ha="right")
+    fig.tight_layout()
+    fig.savefig(dirs["plots"] / "physics_vs_ml_r2.png", dpi=300)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.bar(phys_ml_df["label"], phys_ml_df["test_rmse"], color="tab:orange")
+    ax.set_ylabel("Test RMSE")
+    ax.set_title("Physics Baselines vs Full ML")
+    ax.set_xticklabels(phys_ml_df["label"], rotation=35, ha="right")
+    fig.tight_layout()
+    fig.savefig(dirs["plots"] / "physics_vs_ml_rmse.png", dpi=300)
+    plt.close(fig)
+
+    # Core CV + test-scatter plots for full models
+    cv_name_map = {
+        "Ridge": "cv_ridge.png",
+        "RandomForest": "cv_random_forest.png",
+        "TorchMLPSmall": "cv_torch_mlp_small.png",
+    }
+    scatter_name_map = {
+        "Ridge": "ridge_test_scatter.png",
+        "RandomForest": "random_forest_test_scatter.png",
+        "TorchMLPSmall": "torch_mlp_small_test_scatter.png",
+    }
+
+    for model_name, out_name in cv_name_map.items():
+        sub = results_df[(results_df["model"] == model_name) & (results_df["feature_set"] == "X_full")]
+        if sub.empty:
+            continue
+        key = f"{model_name}::X_full"
+        obj = objects[key]
+        plot_cv_curve(obj["cv_records"], obj["cv_x"], f"CV Tuning Curve: {model_name}", dirs["plots"] / out_name)
+
+    for model_name, out_name in scatter_name_map.items():
+        sub = results_df[(results_df["model"] == model_name) & (results_df["feature_set"] == "X_full")]
+        if sub.empty:
+            continue
+        key = f"{model_name}::X_full"
+        obj = objects[key]
+        plot_test_scatter(y_tst, obj["y_pred_test"], f"{model_name} Predicted vs Actual", dirs["plots"] / out_name)
+
+    # Baseline predicted-vs-actual plot (LUMO-only ridge if available)
+    if "Ridge::Phys_A_LUMO" in objects:
+        obj = objects["Ridge::Phys_A_LUMO"]
+        plot_test_scatter(y_tst, obj["y_pred_test"], "Ridge on LUMO-only", dirs["plots"] / "baseline_lumo_scatter.png")
 
     plot_model_comparison(results_df, "test_r2", dirs["plots"] / "model_comparison_r2.png")
     plot_model_comparison(results_df, "test_rmse", dirs["plots"] / "model_comparison_rmse.png")
 
-    best_overall = results_df.sort_values("test_r2", ascending=False).iloc[0]
-    best_key = f"{best_overall['model']}::{best_overall['feature_set']}"
-    best_obj = best_objects[best_key]
-    best_fs = best_obj["feature_set"]
-    best_est = best_obj["estimator"]
+    # High-potential subset performance chart
+    hp = results_df[(results_df["feature_set"].isin(["Phys_A_LUMO", "X_full"])) & (results_df["model"].isin(["Ridge", "RandomForest", "TorchMLPSmall", "LinearRegression"]))].copy()
+    hp["label"] = hp["feature_set"] + "|" + hp["model"]
+    fig, ax = plt.subplots(figsize=(11, 5))
+    ax.bar(hp["label"], hp["high_rmse"], color="tab:purple")
+    ax.set_ylabel("High-Potential RMSE")
+    ax.set_title("High-Potential Regime Performance (Top 20% deltaE_V)")
+    ax.set_xticklabels(hp["label"], rotation=30, ha="right")
+    fig.tight_layout()
+    fig.savefig(dirs["plots"] / "high_potential_performance.png", dpi=300)
+    plt.close(fig)
 
-    print("\\n=== BEST OVERALL MODEL ===")
-    print(best_overall)
+    # Choose best full-model for interpretability + screening
+    best_full = results_df[(results_df["feature_set"] == "X_full") & (results_df["model"].isin(["Ridge", "RandomForest", "TorchMLPSmall"]))].sort_values("test_r2", ascending=False).iloc[0]
+    best_key = f"{best_full['model']}::{best_full['feature_set']}"
+    best_obj = objects[best_key]
 
-    feature_ranking_df = pd.DataFrame()
-    model = best_est.named_steps["model"]
-    feature_names = best_fs.train_df.columns.tolist()
+    # Feature ranking from best model
+    x_full_cols = fs_map["X_full"].train_df.columns
+    if best_full["model"] == "Ridge":
+        coef_abs = np.abs(best_obj["model"].coef_)
+        feat_rank = pd.DataFrame({"feature": x_full_cols, "coef_abs": coef_abs}).sort_values("coef_abs", ascending=False)
+        feat_rank["coef_rank"] = np.arange(1, len(feat_rank) + 1)
+    elif best_full["model"] == "RandomForest":
+        imp = best_obj["model"].feature_importances_
+        feat_rank = pd.DataFrame({"feature": x_full_cols, "rf_importance": imp}).sort_values("rf_importance", ascending=False)
+        feat_rank["rf_rank"] = np.arange(1, len(feat_rank) + 1)
+    else:
+        corr_proxy = fs_map["X_full"].train_df.apply(lambda s: s.fillna(s.median()).corr(y_tr), axis=0).abs().fillna(0)
+        feat_rank = corr_proxy.sort_values(ascending=False).reset_index()
+        feat_rank.columns = ["feature", "corr_proxy"]
+        feat_rank["proxy_rank"] = np.arange(1, len(feat_rank) + 1)
 
-    if hasattr(model, "feature_importances_"):
-        imp = pd.Series(model.feature_importances_, index=feature_names)
-        feature_ranking_df = (
-            imp.abs()
-            .sort_values(ascending=False)
-            .head(50)
-            .reset_index()
-            .rename(columns={"index": "feature", 0: "importance"})
-        )
-        feature_ranking_df["impurity_rank"] = np.arange(1, len(feature_ranking_df) + 1)
-    elif hasattr(model, "coef_"):
-        imp = pd.Series(np.abs(model.coef_), index=feature_names)
-        feature_ranking_df = (
-            imp.sort_values(ascending=False)
-            .head(50)
-            .reset_index()
-            .rename(columns={"index": "feature", 0: "coef_abs"})
-        )
-        feature_ranking_df["coef_rank"] = np.arange(1, len(feature_ranking_df) + 1)
+    feat_rank.to_csv(dirs["results"] / "feature_ranking.csv", index=False)
+    plot_top_features(feat_rank, dirs["plots"] / "top_features.png", top_n=25)
 
-    # Importance stability across feature sets (best model type retrained).
-    stability_rows = []
-    best_model_name = best_overall["model"]
-    model_template, _, scale_flag = get_models_and_grids()[best_model_name]
-    for fs in feature_sets:
-        est = build_pipeline(clone(model_template), scale=scale_flag)
-        est.fit(fs.train_df, y_tr)
-        m = est.named_steps["model"]
-        if hasattr(m, "feature_importances_"):
-            imp = pd.Series(m.feature_importances_, index=fs.train_df.columns)
-        elif hasattr(m, "coef_"):
-            imp = pd.Series(np.abs(m.coef_), index=fs.train_df.columns)
-        else:
-            continue
-        top_feats = imp.sort_values(ascending=False).head(25).index.tolist()
-        for rank, feat in enumerate(top_feats, start=1):
-            stability_rows.append({"feature_set": fs.name, "feature": feat, "rank": rank})
-
-    stability_df = pd.DataFrame(stability_rows)
-    if not stability_df.empty:
-        stable_counts = stability_df.groupby("feature")["feature_set"].nunique().reset_index()
-        stable_counts = stable_counts.rename(columns={"feature_set": "n_feature_sets_present"})
-        feature_ranking_df = feature_ranking_df.merge(stable_counts, on="feature", how="outer")
-
-    rank_cols = [c for c in ["coef_rank", "impurity_rank", "permutation_rank"] if c in feature_ranking_df.columns]
-    if rank_cols:
-        feature_ranking_df = feature_ranking_df.sort_values(
-            by=rank_cols, na_position="last"
-        ).reset_index(drop=True)
-
-    feature_ranking_df.to_csv(dirs["results"] / "feature_ranking.csv", index=False)
-
-    # Error analysis on best model.
-    err_df, residual_stats, by_bin = residual_analysis(
-        df_tst[NAME_COL], y_tst, best_obj["y_pred_test"], dirs["plots"]
-    )
+    # Residual analysis on best full-model
+    err_df, residual_stats = residual_analysis(df_tst[NAME_COL], y_tst, best_obj["y_pred_test"], dirs["plots"])
     print("\\n=== RESIDUAL STATS ===")
     print(residual_stats)
     print("\\n10 worst predictions:")
     print(err_df.head(10))
 
-    class_df = descriptor_class_analysis(df_tst, y_tst, best_obj["y_pred_test"], dirs["plots"])
-    if not class_df.empty:
-        print("\\n=== ERROR BY DESCRIPTOR-DEFINED CLASS ===")
-        print(class_df)
-
-    screening_df = screening_pipeline(
+    screening = screening_pipeline(
         df_full,
-        next(fs for fs in feature_sets if fs.name == best_fs.name),
-        best_est,
+        fs_map["X_full"],
+        best_obj["preprocessor"],
+        best_obj["model"],
+        str(best_full["model"]),
         y_tr,
         dirs["results"],
         dirs["plots"],
     )
 
-    # Final concise summary for paper workflow.
     print("\\n=== FINAL SUMMARY ===")
     print(
-        f"Best model + feature set: {best_overall['model']} on {best_overall['feature_set']} | "
-        f"Test RMSE={best_overall['test_rmse']:.4f}, MAE={best_overall['test_mae']:.4f}, R2={best_overall['test_r2']:.4f}"
+        f"Best full model: {best_full['model']} on X_full | "
+        f"Test RMSE={best_full['test_rmse']:.4f}, MAE={best_full['test_mae']:.4f}, R2={best_full['test_r2']:.4f}"
     )
-
-    if not feature_ranking_df.empty:
-        top5 = feature_ranking_df.head(5)
-        print("Top 5 important descriptors:")
-        print(top5)
-
-    if not class_df.empty:
-        hardest = class_df.sort_values("MAE", ascending=False).iloc[0]
-        easiest = class_df.sort_values("MAE", ascending=True).iloc[0]
-        print(
-            f"Hardest class: {hardest['class']} (MAE={hardest['MAE']:.4f}); "
-            f"Easiest class: {easiest['class']} (MAE={easiest['MAE']:.4f})"
-        )
-
-    print(f"Molecules passing all filters: {int(screening_df['passes_all'].sum())}")
-    top_candidate = screening_df[screening_df["passes_all"]].sort_values(
-        "predicted_redox_potential", ascending=False
-    )
-    if not top_candidate.empty:
-        t = top_candidate.iloc[0]
-        print(
-            "Best candidate: "
-            f"{t[NAME_COL]} | predicted_redox_potential={t['predicted_redox_potential']:.4f}, "
-            f"MW={t['MW']:.2f}, TopoPSA={t['TopoPSA']:.2f}, "
-            f"LUMO={t['LUMO']:.4f}, HOMO={t['HOMO']:.4f}, "
-            f"capacity_proxy_mAh_g={t['capacity_proxy_mAh_g']:.2f}"
-        )
+    print(f"Molecules passing strict filters: {int(screening['passes_all'].sum())}")
 
 
 if __name__ == "__main__":
