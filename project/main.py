@@ -1,3 +1,4 @@
+import argparse
 import itertools
 import json
 import os
@@ -21,7 +22,7 @@ try:
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
-except Exception as exc:  # pragma: no cover
+except Exception as exc:
     raise ImportError(
         "PyTorch is required for this script. Install it in the active environment, e.g. `pip install torch`."
     ) from exc
@@ -37,6 +38,29 @@ def set_seed(seed: int = RANDOM_STATE) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+
+
+def bootstrap_ci(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    metric_fn,
+    n_boot: int = 1000,
+    ci: float = 0.95,
+    seed: int = RANDOM_STATE,
+) -> tuple[float, float, float]:
+    """Bootstrap 95% CI for a metric on the test set."""
+    rng = np.random.RandomState(seed)
+    n = len(y_true)
+    scores = []
+    for _ in range(n_boot):
+        idx = rng.randint(0, n, size=n)
+        try:
+            scores.append(metric_fn(y_true[idx], y_pred[idx]))
+        except ValueError:
+            continue
+    lo = float(np.percentile(scores, (1 - ci) / 2 * 100))
+    hi = float(np.percentile(scores, (1 + ci) / 2 * 100))
+    return float(np.mean(scores)), lo, hi
 
 
 @dataclass
@@ -55,6 +79,7 @@ class Preprocessor:
 
     @staticmethod
     def fit(df: pd.DataFrame, scale: bool = True) -> "Preprocessor":
+        """Fit medians + z-score stats on train data."""
         med = df.median(numeric_only=True)
         x = df.fillna(med)
         if scale:
@@ -66,6 +91,7 @@ class Preprocessor:
         return Preprocessor(medians=med, means=means, stds=stds)
 
     def transform(self, df: pd.DataFrame) -> np.ndarray:
+        """Apply imputation and scaling."""
         x = df.fillna(self.medians)
         x = (x - self.means) / self.stds
         return x.astype(np.float32).to_numpy()
@@ -414,6 +440,7 @@ def evaluate_experiment(
     y_tst: pd.Series,
     specs: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Grid search + CV, retrain best params, evaluate on test set."""
     cfg = specs[model_name]
     candidates = grid_dicts(cfg["grid"])
     cv_records = []
@@ -595,6 +622,7 @@ def screening_pipeline(
     results_dir: Path,
     plots_dir: Path,
 ) -> pd.DataFrame:
+    """Rank all molecules by redox potential + capacity, apply filters, find Pareto front."""
     x_all = prep.transform(fs.all_df)
     preds = predict_model(model_name, model, x_all)
     out = pd.DataFrame({NAME_COL: df_full[NAME_COL], "predicted_redox_potential": preds})
@@ -605,7 +633,7 @@ def screening_pipeline(
     F_CONST = 96485.33212
     out["capacity_proxy_mAh_g"] = 2 * F_CONST / (3.6 * out["MW"])
 
-    # Multi-objective score with penalties.
+    # Weighted score: 50% potential, 35% capacity, 15% outlier penalty
     norm_pred = (out["predicted_redox_potential"] - out["predicted_redox_potential"].min()) / (
         out["predicted_redox_potential"].max() - out["predicted_redox_potential"].min() + 1e-12
     )
@@ -623,7 +651,7 @@ def screening_pipeline(
     out["screen_score"] = 0.50 * norm_pred + 0.35 * norm_cap - 0.15 * penalty
     out["screen_rank"] = out["screen_score"].rank(ascending=False, method="min").astype(int)
 
-    # Keep strict practical filters as hard constraints.
+    # Hard filters for practical viability
     out["passes_mw"] = out["MW"] <= 500
     pol = pd.Series(True, index=out.index)
     for c in ["TopoPSA", "LipoaffinityIndex", "dipole_moment"]:
@@ -655,7 +683,7 @@ def screening_pipeline(
     top20 = out.sort_values("screen_score", ascending=False).head(20).copy()
     top20.to_csv(results_dir / "top20_candidates.csv", index=False)
 
-    # Pareto + ranked screening plot
+    # Screening plot
     fig, ax = plt.subplots(figsize=(9, 6))
     ax.scatter(out["capacity_proxy_mAh_g"], out["predicted_redox_potential"], c="lightgray", alpha=0.6, label="All")
     top_idx = out.sort_values("screen_score", ascending=False).head(50).index
@@ -707,6 +735,18 @@ def screening_pipeline(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Redox potential prediction and screening pipeline for quinone molecules."
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Optional path to external data directory containing dataset CSVs. "
+             "If omitted, data is loaded from project/data/.",
+    )
+    args = parser.parse_args()
+
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
     Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
     set_seed()
@@ -716,10 +756,25 @@ def main() -> None:
     for png in dirs["plots"].glob("*.png"):
         png.unlink()
 
-    source_data_dir = Path("/Users/harryvoorhis/Downloads/org-redox-dataset-main/datasets")
-    data_paths = copy_datasets(source_data_dir, dirs["data"])
+    # Load data
+    if args.data_dir is not None:
+        data_paths = copy_datasets(Path(args.data_dir), dirs["data"])
+    else:
+        data_paths = {}
+        for name in [
+            "DatasetQuinonesFiltered.csv",
+            "DatasetQuinonesFilteredTrain.csv",
+            "DatasetQuinonesFilteredTest.csv",
+        ]:
+            p = dirs["data"] / name
+            if p.exists():
+                data_paths[name] = p
+
     if "DatasetQuinonesFiltered.csv" not in data_paths:
-        raise FileNotFoundError("Missing DatasetQuinonesFiltered.csv")
+        raise FileNotFoundError(
+            "DatasetQuinonesFiltered.csv not found in project/data/. "
+            "See README.md for data acquisition instructions."
+        )
 
     df_full, df_tr, df_tst = get_train_test(data_paths)
     print_eda(df_full, dirs["plots"])
@@ -731,19 +786,19 @@ def main() -> None:
     y_tr = df_tr[TARGET_COL]
     y_tst = df_tst[TARGET_COL]
 
-    # Build experiment matrix
+    # Experiments
     specs = get_model_specs()
     fs_map = {fs.name: fs for fs in feature_sets}
 
     experiments: list[tuple[str, str, pd.DataFrame, pd.DataFrame, pd.DataFrame]] = []
 
-    # Physics-informed baselines (A/B/C): linear + ridge
+    # Physics baselines
     phys_sets = get_physics_sets(df_tr)
     for pname, cols in phys_sets.items():
         experiments.append(("LinearRegression", pname, df_tr[cols], df_tst[cols], df_full[cols]))
         experiments.append(("Ridge", pname, df_tr[cols], df_tst[cols], df_full[cols]))
 
-    # Full-model comparisons on X_full
+    # Full descriptor models
     x_full = fs_map["X_full"]
     experiments.extend(
         [
@@ -753,7 +808,7 @@ def main() -> None:
         ]
     )
 
-    # Keep reduced set variants for context
+    # Reduced feature set
     x_red = fs_map["X_reduced"]
     experiments.extend(
         [
@@ -778,7 +833,7 @@ def main() -> None:
     results_df = pd.DataFrame(rows).sort_values("test_r2", ascending=False)
     results_df.to_csv(dirs["results"] / "model_comparison.csv", index=False)
 
-    # Descriptor-family comparison with Ridge only
+    # Descriptor family ablation
     families = get_descriptor_families(df_tr)
     fam_rows = []
     for fam_name, cols in families.items():
@@ -796,7 +851,7 @@ def main() -> None:
     family_df = pd.DataFrame(fam_rows).sort_values("test_r2", ascending=False)
     family_df.to_csv(dirs["results"] / "descriptor_family_performance.csv", index=False)
 
-    # Plot: family performance
+    # Family performance plot
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.bar(family_df["family"], family_df["test_r2"], color="tab:blue")
     ax.set_ylabel("Test R2")
@@ -806,7 +861,7 @@ def main() -> None:
     fig.savefig(dirs["plots"] / "descriptor_family_performance.png", dpi=300)
     plt.close(fig)
 
-    # Physics baseline vs full ML chart
+    # Physics vs ML plot
     mask_phys = results_df["feature_set"].str.startswith("Phys_")
     mask_full = (results_df["feature_set"] == "X_full") & (results_df["model"].isin(["Ridge", "RandomForest", "TorchMLPSmall"]))
     phys_ml_df = results_df[mask_phys | mask_full].copy()
@@ -830,7 +885,7 @@ def main() -> None:
     fig.savefig(dirs["plots"] / "physics_vs_ml_rmse.png", dpi=300)
     plt.close(fig)
 
-    # Core CV + test-scatter plots for full models
+    # CV curves and scatter plots
     cv_name_map = {
         "Ridge": "cv_ridge.png",
         "RandomForest": "cv_random_forest.png",
@@ -858,7 +913,7 @@ def main() -> None:
         obj = objects[key]
         plot_test_scatter(y_tst, obj["y_pred_test"], f"{model_name} Predicted vs Actual", dirs["plots"] / out_name)
 
-    # Baseline predicted-vs-actual plot (LUMO-only ridge if available)
+    # LUMO-only baseline scatter
     if "Ridge::Phys_A_LUMO" in objects:
         obj = objects["Ridge::Phys_A_LUMO"]
         plot_test_scatter(y_tst, obj["y_pred_test"], "Ridge on LUMO-only", dirs["plots"] / "baseline_lumo_scatter.png")
@@ -866,7 +921,7 @@ def main() -> None:
     plot_model_comparison(results_df, "test_r2", dirs["plots"] / "model_comparison_r2.png")
     plot_model_comparison(results_df, "test_rmse", dirs["plots"] / "model_comparison_rmse.png")
 
-    # High-potential subset performance chart
+    # High-potential regime plot
     hp = results_df[(results_df["feature_set"].isin(["Phys_A_LUMO", "X_full"])) & (results_df["model"].isin(["Ridge", "RandomForest", "TorchMLPSmall", "LinearRegression"]))].copy()
     hp["label"] = hp["feature_set"] + "|" + hp["model"]
     fig, ax = plt.subplots(figsize=(11, 5))
@@ -878,12 +933,12 @@ def main() -> None:
     fig.savefig(dirs["plots"] / "high_potential_performance.png", dpi=300)
     plt.close(fig)
 
-    # Choose best full-model for interpretability + screening
+    # Pick best model for screening
     best_full = results_df[(results_df["feature_set"] == "X_full") & (results_df["model"].isin(["Ridge", "RandomForest", "TorchMLPSmall"]))].sort_values("test_r2", ascending=False).iloc[0]
     best_key = f"{best_full['model']}::{best_full['feature_set']}"
     best_obj = objects[best_key]
 
-    # Feature ranking from best model
+    # Feature importance
     x_full_cols = fs_map["X_full"].train_df.columns
     if best_full["model"] == "Ridge":
         coef_abs = np.abs(best_obj["model"].coef_)
@@ -902,12 +957,49 @@ def main() -> None:
     feat_rank.to_csv(dirs["results"] / "feature_ranking.csv", index=False)
     plot_top_features(feat_rank, dirs["plots"] / "top_features.png", top_n=25)
 
-    # Residual analysis on best full-model
+    # Residuals
     err_df, residual_stats = residual_analysis(df_tst[NAME_COL], y_tst, best_obj["y_pred_test"], dirs["plots"])
     print("\\n=== RESIDUAL STATS ===")
     print(residual_stats)
     print("\\n10 worst predictions:")
     print(err_df.head(10))
+
+    # Substituent / structural-type error analysis
+    y_pred_best = best_obj["y_pred_test"]
+    abs_err = np.abs(y_tst.to_numpy() - y_pred_best)
+    sub_df = df_tst[[NAME_COL]].copy()
+    sub_df["abs_error"] = abs_err
+    sub_df["actual"] = y_tst.values
+    sub_df["predicted"] = y_pred_best
+    # classify by structural features available in the test set
+    sub_df["has_nitrogen"] = (df_tst["nN"] > 0).values if "nN" in df_tst.columns else False
+    sub_df["is_aromatic"] = (df_tst["naAromAtom"] > 0).values if "naAromAtom" in df_tst.columns else False
+    sub_df["n_rings"] = df_tst["nRing"].values if "nRing" in df_tst.columns else 0
+    sub_df["ring_group"] = pd.cut(sub_df["n_rings"], bins=[-1, 1, 2, 3, 100], labels=["1", "2", "3", "4+"])
+    sub_df["is_variant"] = sub_df[NAME_COL].str.contains("_prop_|_\\d+$", regex=True)
+    sub_df["mw_group"] = pd.cut(df_tst["MW"].values, bins=[0, 150, 200, 250, 1000], labels=["<150", "150-200", "200-250", ">250"])
+
+    print("\n=== ERROR BY STRUCTURAL TYPE ===")
+    for col in ["has_nitrogen", "is_aromatic", "ring_group", "is_variant", "mw_group"]:
+        grp = sub_df.groupby(col)["abs_error"].agg(["mean", "std", "count"])
+        print(f"\nBy {col}:")
+        print(grp.round(4))
+
+    # Plot error by ring count and MW group
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    for ax, col, title in zip(axes, ["ring_group", "mw_group"], ["Ring Count", "Molecular Weight"]):
+        grp = sub_df.groupby(col)["abs_error"].agg(["mean", "count"])
+        ax.bar(grp.index.astype(str), grp["mean"], color="tab:blue")
+        for i, (idx, row_g) in enumerate(grp.iterrows()):
+            ax.text(i, row_g["mean"] + 0.002, f"n={int(row_g['count'])}", ha="center", fontsize=9)
+        ax.set_xlabel(title)
+        ax.set_ylabel("Mean Absolute Error (V)")
+        ax.set_title(f"Prediction Error by {title}")
+    fig.tight_layout()
+    fig.savefig(dirs["plots"] / "error_by_structure.png", dpi=300)
+    plt.close(fig)
+
+    sub_df.to_csv(dirs["results"] / "error_by_structure.csv", index=False)
 
     screening = screening_pipeline(
         df_full,
@@ -920,7 +1012,38 @@ def main() -> None:
         dirs["plots"],
     )
 
-    print("\\n=== FINAL SUMMARY ===")
+    # Print results with bootstrap CIs
+    print("\n=== RESULTS TABLE (with 95% bootstrap CI on test set) ===")
+    header = f"{'Model':<20} {'Features':<16} {'Test R²':>22}  {'Test RMSE':>22}  {'Test MAE':>22}"
+    print(header)
+    print("-" * len(header))
+    y_tst_np = y_tst.to_numpy()
+    ci_rows = []
+    for _, r in results_df.iterrows():
+        key = f"{r['model']}::{r['feature_set']}"
+        y_pred = objects[key]["y_pred_test"]
+        r2_mean, r2_lo, r2_hi = bootstrap_ci(y_tst_np, y_pred, r2_score)
+        rmse_mean, rmse_lo, rmse_hi = bootstrap_ci(
+            y_tst_np, y_pred, lambda y, p: np.sqrt(mean_squared_error(y, p))
+        )
+        mae_mean, mae_lo, mae_hi = bootstrap_ci(
+            y_tst_np, y_pred, mean_absolute_error
+        )
+        ci_rows.append({
+            "model": r["model"], "feature_set": r["feature_set"],
+            "test_r2": r2_mean, "r2_ci_lo": r2_lo, "r2_ci_hi": r2_hi,
+            "test_rmse": rmse_mean, "rmse_ci_lo": rmse_lo, "rmse_ci_hi": rmse_hi,
+            "test_mae": mae_mean, "mae_ci_lo": mae_lo, "mae_ci_hi": mae_hi,
+        })
+        print(
+            f"{r['model']:<20} {r['feature_set']:<16} "
+            f"{r2_mean:>6.4f} [{r2_lo:.4f}, {r2_hi:.4f}]  "
+            f"{rmse_mean:>6.4f} [{rmse_lo:.4f}, {rmse_hi:.4f}]  "
+            f"{mae_mean:>6.4f} [{mae_lo:.4f}, {mae_hi:.4f}]"
+        )
+    pd.DataFrame(ci_rows).to_csv(dirs["results"] / "results_with_ci.csv", index=False)
+
+    print("\n=== FINAL SUMMARY ===")
     print(
         f"Best full model: {best_full['model']} on X_full | "
         f"Test RMSE={best_full['test_rmse']:.4f}, MAE={best_full['test_mae']:.4f}, R2={best_full['test_r2']:.4f}"
