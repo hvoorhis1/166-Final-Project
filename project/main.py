@@ -861,26 +861,34 @@ def main() -> None:
     fig.savefig(dirs["plots"] / "descriptor_family_performance.png", dpi=300)
     plt.close(fig)
 
-    # Physics vs ML plot
+    # Physics vs ML plot (use short readable labels)
     mask_phys = results_df["feature_set"].str.startswith("Phys_")
     mask_full = (results_df["feature_set"] == "X_full") & (results_df["model"].isin(["Ridge", "RandomForest", "TorchMLPSmall"]))
     phys_ml_df = results_df[mask_phys | mask_full].copy()
-    phys_ml_df["label"] = phys_ml_df["feature_set"] + "|" + phys_ml_df["model"]
+    short_fs = {"Phys_A_LUMO": "LUMO", "Phys_B_LUMO_HOMO": "LUMO+HOMO", "Phys_C_small_electronic": "Phys-C (7)", "X_full": "Full (141)"}
+    short_model = {"LinearRegression": "LinReg", "Ridge": "Ridge", "RandomForest": "RF", "TorchMLPSmall": "MLP"}
+    phys_ml_df["label"] = phys_ml_df.apply(lambda r: f"{short_fs.get(r['feature_set'], r['feature_set'])}\n{short_model.get(r['model'], r['model'])}", axis=1)
 
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.bar(phys_ml_df["label"], phys_ml_df["test_r2"], color="tab:green")
-    ax.set_ylabel("Test R2")
-    ax.set_title("Physics Baselines vs Full ML")
-    ax.set_xticklabels(phys_ml_df["label"], rotation=35, ha="right")
+    fig, ax = plt.subplots(figsize=(11, 5))
+    bars = ax.bar(range(len(phys_ml_df)), phys_ml_df["test_r2"], color="tab:green")
+    ax.set_xticks(range(len(phys_ml_df)))
+    ax.set_xticklabels(phys_ml_df["label"], fontsize=10)
+    ax.set_ylabel("Test $R^2$", fontsize=12)
+    ax.set_title("Physics Baselines vs Full ML Models", fontsize=13)
+    for bar, val in zip(bars, phys_ml_df["test_r2"]):
+        ax.text(bar.get_x() + bar.get_width() / 2, val + 0.01, f"{val:.3f}", ha="center", fontsize=9)
     fig.tight_layout()
     fig.savefig(dirs["plots"] / "physics_vs_ml_r2.png", dpi=300)
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.bar(phys_ml_df["label"], phys_ml_df["test_rmse"], color="tab:orange")
-    ax.set_ylabel("Test RMSE")
-    ax.set_title("Physics Baselines vs Full ML")
-    ax.set_xticklabels(phys_ml_df["label"], rotation=35, ha="right")
+    fig, ax = plt.subplots(figsize=(11, 5))
+    bars = ax.bar(range(len(phys_ml_df)), phys_ml_df["test_rmse"], color="tab:orange")
+    ax.set_xticks(range(len(phys_ml_df)))
+    ax.set_xticklabels(phys_ml_df["label"], fontsize=10)
+    ax.set_ylabel("Test RMSE (V)", fontsize=12)
+    ax.set_title("Physics Baselines vs Full ML Models", fontsize=13)
+    for bar, val in zip(bars, phys_ml_df["test_rmse"]):
+        ax.text(bar.get_x() + bar.get_width() / 2, val + 0.005, f"{val:.3f}", ha="center", fontsize=9)
     fig.tight_layout()
     fig.savefig(dirs["plots"] / "physics_vs_ml_rmse.png", dpi=300)
     plt.close(fig)

@@ -69,7 +69,7 @@ We group descriptors into five families (frontier/electronic, H-bond acceptor, c
 
 \subsection{Screening}
 
-We estimate gravimetric capacity as $Q = nF / (3.6 \cdot MW)$ with $n = 2$ and $F = 96{,}485$ C/mol. We rank molecules by a weighted score (50\% normalized potential, 35\% normalized capacity, 15\% outlier penalty) and identify Pareto-optimal candidates.
+We estimate gravimetric capacity as $Q = nF / (3.6 \cdot MW)$ with $n = 2$ and $F = 96{,}485$ C/mol. We rank molecules by a weighted score prioritizing potential over capacity with a small penalty for physicochemical outliers (50\% normalized potential, 35\% normalized capacity, 15\% outlier penalty), and identify Pareto-optimal candidates.
 
 \section{Results and Discussion}
 
@@ -140,7 +140,7 @@ We analyzed prediction errors of the best model grouped by structural properties
     \label{fig:ablations}
 \end{figure}
 
-Figure~\ref{fig:ablations}b shows predicted redox potential against the capacity proxy for all 494 molecules, with Pareto-optimal candidates in red. The Pareto front reveals an explicit tradeoff: very high-potential molecules tend to have higher molecular weight (lower capacity). Top-ranked candidates cluster in the high-potential, moderate-capacity region. This two-objective view is more informative than sorting by potential alone. Full screening results are available in the code repository.
+Figure~\ref{fig:ablations}b shows predicted redox potential against the capacity proxy for all 494 molecules, with Pareto-optimal candidates in red. The Pareto front reveals an explicit tradeoff: very high-potential molecules tend to have higher molecular weight (lower capacity). Top-ranked candidates cluster in the high-potential, moderate-capacity region. This two-objective view is more informative than sorting by potential alone. Note that the screening scores all 494 molecules, including the 395 training molecules, so predictions for training-set molecules are in-sample and should be validated experimentally. Full screening results are available in the code repository.
 
 \subsection{Limitations}
 
