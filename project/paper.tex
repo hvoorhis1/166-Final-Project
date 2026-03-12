@@ -10,6 +10,7 @@
 \usepackage{graphicx}
 \graphicspath{{plots/}}
 \usepackage{subcaption}
+\usepackage{float}
 \usepackage{microtype}
 \usepackage{enumitem}
 \usepackage{xcolor}
@@ -79,7 +80,7 @@ Table~\ref{tab:results} summarizes the results. The MLP on the full descriptor s
 
 The physics baselines show that LUMO alone explains 65\% of the variance ($R^2 = 0.648$), and the 7-feature Phys-C reaches $R^2 = 0.729$. The progression from Phys-A to Phys-C to Ridge to MLP ($0.648 \to 0.729 \to 0.848 \to 0.924$) shows that each layer of complexity contributes. The Ridge-to-MLP jump ($+0.076$ in $R^2$) suggests that nonlinear descriptor interactions matter. The parity plot in Figure~\ref{fig:main_results}b confirms this: the MLP clusters more tightly around $y = x$, especially at higher potentials.
 
-\begin{table}[t]
+\begin{table}[H]
 \centering
 \caption{Test-set performance with 95\% bootstrap CIs (99 held-out molecules).}
 \label{tab:results}
@@ -100,14 +101,16 @@ Linear Reg. & Phys-A (1) & 0.648 [0.520, 0.751] & 0.260 [0.221, 0.302] & 0.198 [
 \end{tabular}
 \end{table}
 
-\begin{figure}[t]
+\begin{figure}[H]
     \centering
-    \begin{subfigure}[b]{0.48\textwidth}
+    \begin{subfigure}[b]{0.75\textwidth}
         \includegraphics[width=\textwidth]{physics_vs_ml_r2.png}
         \caption{Test $R^2$ for physics baselines and full ML models.}
     \end{subfigure}
-    \hfill
-    \begin{subfigure}[b]{0.48\textwidth}
+
+    \vspace{0.5em}
+
+    \begin{subfigure}[b]{0.75\textwidth}
         \includegraphics[width=\textwidth]{predicted_vs_actual.png}
         \caption{Predicted vs.\ actual for the best model (MLP, X\_full).}
     \end{subfigure}
@@ -125,7 +128,7 @@ We analyzed prediction errors of the best model grouped by structural properties
 
 \subsection{Screening}
 
-\begin{figure}[t]
+\begin{figure}[H]
     \centering
     \begin{subfigure}[b]{0.48\textwidth}
         \includegraphics[width=\textwidth]{descriptor_family_performance.png}
